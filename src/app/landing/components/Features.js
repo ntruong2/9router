@@ -16,7 +16,7 @@ const FEATURES = [
   { 
     icon: "bolt", 
     title: "Easy Setup", 
-    desc: "Get up and running in minutes with npx command.", 
+    desc: "Sign in and get a working API key in under a minute.", 
     colors: {
       border: "hover:border-orange-500/50",
       bg: "hover:bg-orange-500/5",
@@ -76,7 +76,7 @@ const FEATURES = [
   { 
     icon: "terminal", 
     title: "CLI Support", 
-    desc: "Works with Claude Code, Codex, Cline, Cursor, and more.", 
+    desc: "Works with Claude Code, Codex, Antigravity, Cursor, and more.", 
     colors: {
       border: "hover:border-emerald-500/50",
       bg: "hover:bg-emerald-500/5",
@@ -114,7 +114,7 @@ export default function Features() {
           {FEATURES.map((feature) => (
             <div 
               key={feature.title}
-              className={`p-6 rounded-xl bg-[#23180f] border border-[#3a2f27] ${feature.colors.border} ${feature.colors.bg} transition-all duration-300 group`}
+              className={`p-6 rounded-xl bg-[#0a1414] border border-[#123433] ${feature.colors.border} ${feature.colors.bg} transition-all duration-300 group`}
             >
               <div className={`w-10 h-10 rounded-lg ${feature.colors.iconBg} flex items-center justify-center mb-4 ${feature.colors.iconText} group-hover:scale-110 transition-transform duration-300`}>
                 <span className="material-symbols-outlined">{feature.icon}</span>

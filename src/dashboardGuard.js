@@ -22,6 +22,7 @@ async function hasValidCliToken(request) {
 // Public API paths — no auth required (LLM API has its own key auth inside handler).
 const PUBLIC_API_PATHS = [
   "/api/health",
+  "/api/public/status",
   "/api/init",
   "/api/locale",
   "/api/auth/login",
@@ -45,7 +46,6 @@ const ALWAYS_PROTECTED = [
   "/api/version/update",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
-  "/api/oauth/zed/auto-import",
 ];
 
 // Require auth, but allow through if requireLogin is disabled
@@ -82,7 +82,6 @@ const LOCAL_ONLY_PATHS = [
   "/api/tunnel/disable",
   "/api/oauth/cursor/auto-import",
   "/api/oauth/kiro/auto-import",
-  "/api/oauth/zed/auto-import",
   "/api/auth/reset-password",
   "/api/headroom/start",
   "/api/headroom/stop",
@@ -193,9 +192,6 @@ function isPublicApi(pathname) {
   return PUBLIC_API_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-// Shared with src/proxy.js — the mimo login branch must respect dashboard auth.
-export { isAuthenticated };
-
 export const __test__ = {
   isLocalRequest,
   isPublicLlmApi,
@@ -275,9 +271,10 @@ export async function proxy(request) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  // Redirect / to /dashboard if logged in, or /dashboard if it's the root
+  // Root always shows the landing page, signed in or not (rewrite, not redirect,
+  // so the URL bar stays "/"). Visitors reach the dashboard via its own CTA links.
   if (pathname === "/") {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
+    return NextResponse.rewrite(new URL("/landing", request.url));
   }
 
   return NextResponse.next();
