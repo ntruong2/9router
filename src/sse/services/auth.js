@@ -11,6 +11,15 @@ let selectionMutex = Promise.resolve();
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
+// Parse "reset after 3h32m37s" / "reset after 25m57s" / "reset after 41s" into an absolute timestamp.
+function parseResetAfterMs(errorText) {
+  if (typeof errorText !== "string") return null;
+  const m = errorText.match(/reset after\s+(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+(?:\.\d+)?)s)?/i);
+  if (!m || (!m[1] && !m[2] && !m[3])) return null;
+  const ms = ((Number(m[1]) || 0) * 3600 + (Number(m[2]) || 0) * 60 + (Number(m[3]) || 0)) * 1000;
+  return ms > 0 ? Date.now() + ms : null;
+}
+
 function githubMonthlyResetMs(status, errorText, provider) {
   if (resolveProviderId(provider) !== "github" || Number(status) !== 402) return null;
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
@@ -247,6 +256,11 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
   const backoffLevel = conn?.backoffLevel || 0;
+
+  // Callers that don't pass resetsAtMs (e.g. image generation) still get the exact reset when the
+  // provider states it, e.g. Google "Your quota will reset after 3h32m37s." — otherwise the account
+  // is retried every few minutes for hours and each request walks through all locked accounts.
+  if (!resetsAtMs) resetsAtMs = parseResetAfterMs(errorText);
 
   // GitHub premium-request exhaustion is account-wide until the next UTC month.
   const githubResetAtMs = githubMonthlyResetMs(status, errorText, provider);
