@@ -292,10 +292,11 @@ export async function handleImageGenerationCore({
   }
 
   if (!providerResponse.ok) {
-    const { statusCode, message } = await parseUpstreamError(providerResponse);
+    // Pass the executor so provider-specific reset times (e.g. codex usage_limit resets_at) survive
+    const { statusCode, message, resetsAtMs } = await parseUpstreamError(providerResponse, getExecutor(provider));
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     log?.debug?.("IMAGE", `Provider error: ${errMsg}`);
-    return createErrorResult(statusCode, errMsg);
+    return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
   // Parse provider response — adapter may override (codex SSE / async polling / binary)

@@ -87,6 +87,7 @@ async function parseStream(response, log, callbacks = {}) {
   let bytesReceived = 0;
   let lastProgressLogMs = 0;
   let usage = null;
+  let streamError = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -143,9 +144,28 @@ async function parseStream(response, log, callbacks = {}) {
           usage = normalizeResponsesUsage(data?.response?.usage ?? data?.usage) || usage;
         } catch {}
       }
+
+      // Keep the real reason when codex fails mid-stream (rate limit, moderation, bad model...)
+      if ((eventName === "response.failed" || eventName === "error" || eventName === "response.incomplete") && dataStr) {
+        try {
+          const data = JSON.parse(dataStr);
+          const err = data?.response?.error || data?.error || data;
+          const reason = data?.response?.incomplete_details?.reason;
+          streamError = [err?.code, err?.message || reason].filter(Boolean).join(": ") || eventName;
+        } catch {
+          streamError = eventName;
+        }
+        log?.warn?.("IMAGE", `codex stream error: ${streamError}`);
+      }
     }
   }
-  return { imageB64, usage };
+  return { imageB64, usage, streamError };
+}
+
+function noImageMessage(streamError) {
+  return streamError
+    ? `Codex did not return an image: ${streamError}`
+    : "Codex did not return an image (stream ended without an image result).";
 }
 
 // SSE Response that pipes codex progress + partial + done events to client
@@ -159,12 +179,12 @@ function buildSseResponse(providerResponse, log, onSuccess, onUsage) {
       // Keep idle proxies from cutting the connection while codex is silent (e.g. reference images)
       const keepalive = setInterval(() => write(": keepalive\n\n"), 15000);
       try {
-        const { imageB64: b64, usage } = await parseStream(providerResponse, log, {
+        const { imageB64: b64, usage, streamError } = await parseStream(providerResponse, log, {
           onProgress: (info) => send("progress", info),
           onPartialImage: (info) => send("partial_image", info),
         });
         if (!b64) {
-          send("error", { message: "Codex did not return an image. Account may not be entitled (Plus/Pro required)." });
+          send("error", { message: noImageMessage(streamError) });
         } else {
           if (usage && onUsage) await onUsage(usage);
           if (onSuccess) await onSuccess();
@@ -240,9 +260,9 @@ export default {
     if (streamToClient) {
       return { sseResponse: buildSseResponse(response, log, onRequestSuccess, onUsage) };
     }
-    const { imageB64: b64, usage } = await parseStream(response, log);
+    const { imageB64: b64, usage, streamError } = await parseStream(response, log);
     if (!b64) {
-      throw new Error("Codex did not return an image. Account may not be entitled (Plus/Pro required).");
+      throw new Error(noImageMessage(streamError));
     }
     if (usage && onUsage) await onUsage(usage);
     return { created: nowSec(), data: [{ b64_json: b64 }] };
