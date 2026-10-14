@@ -54,9 +54,66 @@ export async function handleImageGenerationCore({
 
   // Executor-delegating adapters: skip manual URL/headers/body, use the proven executor flow
   if (adapter.useExecutor && adapter.executeViaExecutor) {
+    log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
+    const execPromise = adapter.executeViaExecutor(model, body, credentials, log);
+    execPromise.catch(() => {});
+
+    // Streaming clients: if the executor is still running after 10s, open SSE and send
+    // progress keepalives so idle proxies don't cut the request. Fast results/errors
+    // still go through the normal path below (keeps account fallback working).
+    if (streamToClient && !binaryOutput) {
+      const settled = await Promise.race([
+        execPromise.then(() => true, () => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 10000)),
+      ]);
+      if (!settled) {
+        return { success: true, response: buildExecutorSseResponse(execPromise) };
+      }
+    }
+
+    function buildExecutorSseResponse(promise) {
+      const enc = new TextEncoder();
+      const startedAt = Date.now();
+      const stream = new ReadableStream({
+        async start(controller) {
+          let closed = false;
+          const send = (event, data) => {
+            if (closed) return;
+            try { controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); } catch { closed = true; }
+          };
+          const progress = () => send("progress", { stage: "generating", elapsedMs: Date.now() - startedAt });
+          progress();
+          const keepalive = setInterval(progress, 10000);
+          try {
+            const responseBody = await promise;
+            if (onRequestSuccess) await onRequestSuccess();
+            const normalized = adapter.normalize(responseBody, body.prompt);
+            const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : responseBody;
+            send("done", finalBody);
+          } catch (error) {
+            const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
+            log?.debug?.("IMAGE", `Executor stream error: ${errMsg}`);
+            send("error", { message: errMsg });
+          } finally {
+            clearInterval(keepalive);
+            closed = true;
+            try { controller.close(); } catch {}
+          }
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          "Connection": "keep-alive",
+          "X-Accel-Buffering": "no",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+
     try {
-      log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
-      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log);
+      const responseBody = await execPromise;
       if (onRequestSuccess) await onRequestSuccess();
       const normalized = adapter.normalize(responseBody, body.prompt);
       const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : responseBody;

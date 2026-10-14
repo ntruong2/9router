@@ -178,7 +178,8 @@ export class AntigravityExecutor extends BaseExecutor {
 
     // ─── Image generation: completely different request structure ───
     if (isImageModel(model)) {
-      const imageConfig = parseImageConfig(model);
+      // Explicit body.imageConfig (from the images adapter's size mapping) overrides model suffix
+      const imageConfig = { ...parseImageConfig(model), ...(body.imageConfig || {}) };
       // Strip model name suffixes for the actual API model name
       const cleanModel = model.replace(/-(\d+)x(\d+)$/, "");
 

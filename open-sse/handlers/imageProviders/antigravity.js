@@ -33,16 +33,13 @@ export default {
 
     // Ensure we use an image model for image generation
     const isImageModel = (m) => /image|imagen|image-generation/i.test(m || "");
-    let targetModel = isImageModel(model) ? model : "gemini-3.1-flash-image";
+    const targetModel = isImageModel(model) ? model : "gemini-3.1-flash-image";
 
-    // If body.size is provided, resolve aspect ratio and append to model
-    if (body.size && typeof body.size === "string") {
-      const ratio = sizeToAspectRatio(body.size);
-      const suffix = ratio.replace(":", "x");
-      if (!targetModel.includes(suffix)) {
-        targetModel = `${targetModel}-${suffix}`;
-      }
-    }
+    // Map OpenAI-style size to an aspect ratio. Passed as imageConfig instead of a model-name
+    // suffix: suffixed names like "gemini-3.1-flash-image-3x2" broke the request upstream.
+    const imageConfig = body.size && typeof body.size === "string"
+      ? { aspectRatio: sizeToAspectRatio(body.size) }
+      : null;
 
     // Build parts: text prompt + optional input image for editing
     const parts = [{ text: body.prompt }];
@@ -54,6 +51,7 @@ export default {
 
     const chatBody = {
       contents: [{ role: "user", parts }],
+      ...(imageConfig ? { imageConfig } : {}),
     };
 
     const result = await executor.execute({
