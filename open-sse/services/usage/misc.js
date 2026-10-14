@@ -142,10 +142,17 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
         };
         const range = typeof data.range === "string" ? data.range : "7d";
         const usd = Number(totals.usage_usd) || 0;
-        // TEMP diagnostic: field names only (no values) to locate limit info
-        const keysOf = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.keys(o).join(",") : typeof o);
-        const bucket0 = Array.isArray(data.buckets) ? data.buckets[0] : null;
-        const diag = ` [usage:${keysOf(data)} | totals:${keysOf(totals)} | bucket:${keysOf(bucket0)} | me:${keysOf(me)}]`;
+        // TEMP diagnostic: which range values /api/usage accepts (usage numbers only)
+        const probes = await Promise.all(["30d", "month", "1m", "cycle"].map(async (r) => {
+          try {
+            const res = await proxyAwareFetch(`https://ollama.com/api/usage?range=${r}`, {
+              headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+            }, proxyOptions);
+            const j = await res.json().catch(() => null);
+            return `${r}:${res.status}:${j?.range ?? "-"}:${j?.from ?? "-"}:${j?.totals?.usage_usd ?? "-"}`;
+          } catch (e) { return `${r}:err`; }
+        }));
+        const diag = ` [plan:${planRaw || "-"} created:${me?.CreatedAt || "-"} | ${probes.join(" | ")}]`;
         return {
           plan,
           message: `Ollama Cloud (${range}): ${fmt(totals.request_count)} requests · $${usd.toFixed(2)} · ${fmt(totals.input_tokens)} in / ${fmt(totals.output_tokens)} out tokens. No limits reported by Ollama.${diag}`,
