@@ -86,7 +86,7 @@ export async function getUsageForProvider(connection, proxyOptions = null, optio
 
   const handler = USAGE_HANDLERS[provider];
   if (!handler) return { message: `Usage API not implemented for ${provider}` };
-  return await handler({
+  const usage = await handler({
     provider,
     accessToken,
     apiKey,
@@ -95,4 +95,30 @@ export async function getUsageForProvider(connection, proxyOptions = null, optio
     proxyOptions,
     force: options.force === true,
   });
+  return applyActiveModelLocks(usage, connection);
+}
+
+// Quota APIs can report a model as available while the provider actually rejects it (e.g.
+// Antigravity image models: quota says 100% but generation returns 429 "exhausted your capacity").
+// When 9router has an active lock for a model from a real upstream error, show that model as
+// exhausted until the lock expires so the dashboard matches what requests will do.
+function applyActiveModelLocks(usage, connection) {
+  const quotas = usage?.quotas;
+  if (!quotas || typeof quotas !== "object" || !connection) return usage;
+  const now = Date.now();
+  for (const [key, quota] of Object.entries(quotas)) {
+    const lockUntil = connection[`modelLock_${key}`];
+    const lockMs = lockUntil ? new Date(lockUntil).getTime() : NaN;
+    if (!quota || !Number.isFinite(lockMs) || lockMs <= now) continue;
+    const total = Number(quota.total) || 100;
+    quotas[key] = {
+      ...quota,
+      used: total,
+      total,
+      remainingPercentage: 0,
+      resetAt: new Date(lockMs).toISOString(),
+      lockedByError: true,
+    };
+  }
+  return usage;
 }
