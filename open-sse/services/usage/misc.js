@@ -142,9 +142,13 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
         };
         const range = typeof data.range === "string" ? data.range : "7d";
         const usd = Number(totals.usage_usd) || 0;
+        // TEMP diagnostic: field names only (no values) to locate limit info
+        const keysOf = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.keys(o).join(",") : typeof o);
+        const bucket0 = Array.isArray(data.buckets) ? data.buckets[0] : null;
+        const diag = ` [usage:${keysOf(data)} | totals:${keysOf(totals)} | bucket:${keysOf(bucket0)} | me:${keysOf(me)}]`;
         return {
           plan,
-          message: `Ollama Cloud (${range}): ${fmt(totals.request_count)} requests · $${usd.toFixed(2)} · ${fmt(totals.input_tokens)} in / ${fmt(totals.output_tokens)} out tokens. No limits reported by Ollama.`,
+          message: `Ollama Cloud (${range}): ${fmt(totals.request_count)} requests · $${usd.toFixed(2)} · ${fmt(totals.input_tokens)} in / ${fmt(totals.output_tokens)} out tokens. No limits reported by Ollama.${diag}`,
           quotas: {},
         };
       }
