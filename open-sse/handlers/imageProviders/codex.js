@@ -153,9 +153,11 @@ function buildSseResponse(providerResponse, log, onSuccess, onUsage) {
   const stream = new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
-      const send = (event, data) => {
-        controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-      };
+      let closed = false;
+      const write = (chunk) => { if (!closed) { try { controller.enqueue(enc.encode(chunk)); } catch { closed = true; } } };
+      const send = (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      // Keep idle proxies from cutting the connection while codex is silent (e.g. reference images)
+      const keepalive = setInterval(() => write(": keepalive\n\n"), 15000);
       try {
         const { imageB64: b64, usage } = await parseStream(providerResponse, log, {
           onProgress: (info) => send("progress", info),
@@ -171,7 +173,9 @@ function buildSseResponse(providerResponse, log, onSuccess, onUsage) {
       } catch (err) {
         send("error", { message: err?.message || "Stream failed" });
       } finally {
-        controller.close();
+        clearInterval(keepalive);
+        closed = true;
+        try { controller.close(); } catch {}
       }
     },
   });

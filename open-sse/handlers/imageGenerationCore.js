@@ -107,53 +107,131 @@ export async function handleImageGenerationCore({
 
   log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..."`);
 
-  let providerResponse;
-  try {
-    providerResponse = await fetch(url, {
+  // Fetch provider, with one token refresh + retry on 401/403. Throws on network error.
+  const fetchProvider = async () => {
+    let res = await fetch(url, {
       method: "POST",
       headers,
       body: serializeRequestBody(requestBody),
     });
+
+    // Handle 401/403 — try token refresh (skipped for noAuth providers)
+    const executor = getExecutor(provider);
+    if (
+      !executor?.noAuth &&
+      !adapter.noAuth &&
+      (res.status === HTTP_STATUS.UNAUTHORIZED || res.status === HTTP_STATUS.FORBIDDEN)
+    ) {
+      const newCredentials = await refreshWithRetry(
+        () => executor.refreshCredentials(credentials, log),
+        3,
+        log
+      );
+
+      if (newCredentials?.accessToken || newCredentials?.apiKey) {
+        log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for image generation`);
+        Object.assign(credentials, newCredentials);
+        if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
+
+        try {
+          const retryBody = await adapter.buildBody(model, body);
+          const retryHeaders = adapter.buildHeaders(credentials, retryBody, model, body);
+          const retryUrl = adapter.buildUrl(model, credentials);
+          res = await fetch(retryUrl, {
+            method: "POST",
+            headers: retryHeaders,
+            body: serializeRequestBody(retryBody),
+          });
+        } catch {
+          log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
+        }
+      } else {
+        log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
+      }
+    }
+    return res;
+  };
+
+  // Streaming adapters (codex): open the SSE response to the client immediately and send
+  // keepalive comments while waiting on the provider. Codex can stay silent for 30s+ before
+  // its first byte (e.g. with reference images), and proxies cut idle connections.
+  // Wait briefly first so fast provider errors (429, 5xx) still return a normal error result
+  // and the caller can fall back to another account.
+  let pendingResponse = null;
+  if (streamToClient && adapter.stream && adapter.parseResponse) {
+    pendingResponse = fetchProvider();
+    pendingResponse.catch(() => {});
+    const EARLY_STREAM_AFTER_MS = 10000;
+    const settled = await Promise.race([
+      pendingResponse.then(() => true, () => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), EARLY_STREAM_AFTER_MS)),
+    ]);
+    if (!settled) {
+      return { success: true, response: buildEarlySseResponse(pendingResponse) };
+    }
+  }
+
+  function buildEarlySseResponse(resPromise) {
+    const enc = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        let closed = false;
+        const write = (chunk) => { if (!closed) { try { controller.enqueue(enc.encode(chunk)); } catch { closed = true; } } };
+        const send = (event, data) => write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        const keepalive = setInterval(() => write(": keepalive\n\n"), 15000);
+        send("progress", { stage: "queued", bytesReceived: 0 });
+        try {
+          const res = await resPromise;
+          if (!res.ok) {
+            const { statusCode, message } = await parseUpstreamError(res);
+            const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
+            log?.debug?.("IMAGE", `Provider error: ${errMsg}`);
+            send("error", { status: statusCode, message: errMsg });
+            return;
+          }
+          const parsed = await adapter.parseResponse(res, {
+            headers, log, streamToClient: true, onRequestSuccess, onUsage, url, requestBody, model, body,
+          });
+          const reader = parsed?.sseResponse?.body?.getReader();
+          if (!reader) {
+            send("error", { message: `Invalid stream from ${provider}` });
+            return;
+          }
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (closed) { reader.cancel().catch(() => {}); break; }
+            controller.enqueue(value);
+          }
+        } catch (error) {
+          const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
+          log?.debug?.("IMAGE", `Stream error: ${errMsg}`);
+          send("error", { message: errMsg });
+        } finally {
+          clearInterval(keepalive);
+          closed = true;
+          try { controller.close(); } catch {}
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
+  let providerResponse;
+  try {
+    providerResponse = await (pendingResponse || fetchProvider());
   } catch (error) {
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("IMAGE", `Fetch error: ${errMsg}`);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
-  }
-
-  // Handle 401/403 — try token refresh (skipped for noAuth providers)
-  const executor = getExecutor(provider);
-  if (
-    !executor?.noAuth &&
-    !adapter.noAuth &&
-    (providerResponse.status === HTTP_STATUS.UNAUTHORIZED ||
-      providerResponse.status === HTTP_STATUS.FORBIDDEN)
-  ) {
-    const newCredentials = await refreshWithRetry(
-      () => executor.refreshCredentials(credentials, log),
-      3,
-      log
-    );
-
-    if (newCredentials?.accessToken || newCredentials?.apiKey) {
-      log?.info?.("TOKEN", `${provider.toUpperCase()} | refreshed for image generation`);
-      Object.assign(credentials, newCredentials);
-      if (onCredentialsRefreshed) await onCredentialsRefreshed(newCredentials);
-
-      try {
-        const retryBody = await adapter.buildBody(model, body);
-        const retryHeaders = adapter.buildHeaders(credentials, retryBody, model, body);
-        const retryUrl = adapter.buildUrl(model, credentials);
-        providerResponse = await fetch(retryUrl, {
-          method: "POST",
-          headers: retryHeaders,
-          body: serializeRequestBody(retryBody),
-        });
-      } catch {
-        log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
-      }
-    } else {
-      log?.warn?.("TOKEN", `${provider.toUpperCase()} | refresh failed`);
-    }
   }
 
   if (!providerResponse.ok) {
