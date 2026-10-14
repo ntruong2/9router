@@ -130,9 +130,12 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
     }
 
     if (Object.keys(quotas).length === 0) {
+      // Surface the raw response shape so a changed Ollama format is visible in the dashboard
+      let raw = "";
+      try { raw = JSON.stringify(data).slice(0, 300); } catch {}
       return {
         plan,
-        message: "Ollama Cloud connected. No usage limits reported.",
+        message: `Ollama Cloud connected. No usage limits reported.${raw ? ` Response: ${raw}` : ""}`,
         quotas: {},
       };
     }
