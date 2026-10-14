@@ -130,12 +130,27 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
     }
 
     if (Object.keys(quotas).length === 0) {
-      // Surface the raw response shape so a changed Ollama format is visible in the dashboard
-      let raw = "";
-      try { raw = JSON.stringify(data).slice(0, 300); } catch {}
+      // Newer /api/usage returns usage stats ({ range, totals, buckets }) without limit ratios.
+      // Show the totals as a summary instead of an empty card.
+      const totals = data?.totals;
+      if (totals && typeof totals === "object") {
+        const fmt = (n) => {
+          const v = Number(n) || 0;
+          if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+          if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+          return String(v);
+        };
+        const range = typeof data.range === "string" ? data.range : "7d";
+        const usd = Number(totals.usage_usd) || 0;
+        return {
+          plan,
+          message: `Ollama Cloud (${range}): ${fmt(totals.request_count)} requests · $${usd.toFixed(2)} · ${fmt(totals.input_tokens)} in / ${fmt(totals.output_tokens)} out tokens. No limits reported by Ollama.`,
+          quotas: {},
+        };
+      }
       return {
         plan,
-        message: `Ollama Cloud connected. No usage limits reported.${raw ? ` Response: ${raw}` : ""}`,
+        message: "Ollama Cloud connected. No usage limits reported.",
         quotas: {},
       };
     }
