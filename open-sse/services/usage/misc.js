@@ -24,6 +24,10 @@ export async function getIflowUsage(accessToken) {
   }
 }
 
+// Free plan monthly allowance in USD. Not exposed by the API: inferred from accounts that hit the
+// monthly 429 at exactly $2.50 and from the ollama.com/settings percentage. Update if Ollama changes it.
+const OLLAMA_FREE_MONTHLY_USD = 2.5;
+
 const OLLAMA_LIMIT_WINDOWS = {
   session: "Session (5h)",
   weekly: "Weekly (7d)",
@@ -69,7 +73,8 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
   }
 
   try {
-    const response = await proxyAwareFetch("https://ollama.com/api/usage", {
+    // range=30d covers a full free-plan monthly cycle in the daily buckets
+    const response = await proxyAwareFetch("https://ollama.com/api/usage?range=30d", {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         Accept: "application/json",
@@ -129,9 +134,23 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
       quotas[label] = ratioQuota(ratio, key === "monthly" ? monthlyResetAt : null);
     }
 
+    // Newer /api/usage returns spend stats ({ range, totals, buckets }) without limit ratios.
+    // Free plan: monthly allowance in USD, resetting on the signup day-of-month. Sum the daily
+    // buckets of the current cycle and show it against the allowance (matches ollama.com/settings).
+    if (Object.keys(quotas).length === 0 && Array.isArray(data?.buckets)) {
+      if (planRaw.toLowerCase() === "free" && monthlyResetAt) {
+        const cycleStart = addUtcMonths(new Date(monthlyResetAt), -1);
+        // Daily buckets: include the day the cycle started
+        const cycleStartDay = Date.UTC(cycleStart.getUTCFullYear(), cycleStart.getUTCMonth(), cycleStart.getUTCDate());
+        const usedUsd = data.buckets.reduce((sum, b) => {
+          const from = Date.parse(b?.from);
+          return Number.isFinite(from) && from >= cycleStartDay ? sum + (Number(b?.usage_usd) || 0) : sum;
+        }, 0);
+        quotas["Monthly (Free)"] = ratioQuota(usedUsd / OLLAMA_FREE_MONTHLY_USD, monthlyResetAt);
+      }
+    }
+
     if (Object.keys(quotas).length === 0) {
-      // Newer /api/usage returns usage stats ({ range, totals, buckets }) without limit ratios.
-      // Show the totals as a summary instead of an empty card.
       const totals = data?.totals;
       if (totals && typeof totals === "object") {
         const fmt = (n) => {
@@ -140,22 +159,11 @@ export async function getOllamaUsage(apiKey, providerSpecificData, proxyOptions 
           if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
           return String(v);
         };
-        const range = typeof data.range === "string" ? data.range : "7d";
+        const range = typeof data.range === "string" ? data.range : "30d";
         const usd = Number(totals.usage_usd) || 0;
-        // TEMP diagnostic: which range values /api/usage accepts (usage numbers only)
-        const probes = await Promise.all(["30d", "month", "1m", "cycle"].map(async (r) => {
-          try {
-            const res = await proxyAwareFetch(`https://ollama.com/api/usage?range=${r}`, {
-              headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-            }, proxyOptions);
-            const j = await res.json().catch(() => null);
-            return `${r}:${res.status}:${j?.range ?? "-"}:${j?.from ?? "-"}:${j?.totals?.usage_usd ?? "-"}`;
-          } catch (e) { return `${r}:err`; }
-        }));
-        const diag = ` [plan:${planRaw || "-"} created:${me?.CreatedAt || "-"} | ${probes.join(" | ")}]`;
         return {
           plan,
-          message: `Ollama Cloud (${range}): ${fmt(totals.request_count)} requests · $${usd.toFixed(2)} · ${fmt(totals.input_tokens)} in / ${fmt(totals.output_tokens)} out tokens. No limits reported by Ollama.${diag}`,
+          message: `Ollama Cloud (${range}): ${fmt(totals.request_count)} requests · $${usd.toFixed(2)} · ${fmt(totals.input_tokens)} in / ${fmt(totals.output_tokens)} out tokens. No limits reported by Ollama.`,
           quotas: {},
         };
       }
