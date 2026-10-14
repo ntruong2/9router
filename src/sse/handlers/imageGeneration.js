@@ -73,24 +73,78 @@ export async function handleImageGeneration(request) {
   if (keyAccessDenied) return keyAccessDenied;
 
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
-  const comboModels = await getComboModels(modelStr);
-  if (comboModels) {
-    const comboStrategies = settings.comboStrategies || {};
-    const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
-    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("IMAGE", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
-      body,
-      models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
-      log,
-      comboName: modelStr,
-      comboStrategy,
-      comboStickyLimit,
-    });
-  }
+  // Streaming clients get an SSE response right away with progress keepalives, while the normal
+  // non-stream flow runs underneath so account fallback, locks and combos keep working.
+  // Opening SSE per attempt meant a slow upstream error (e.g. Antigravity 429 after ~17s) ended
+  // the stream without locking the account or trying the next one.
+  const run = async () => {
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels) {
+      const comboStrategies = settings.comboStrategies || {};
+      const comboStrategy = comboStrategies[modelStr]?.fallbackStrategy || settings.comboStrategy || "fallback";
+      const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+      log.info("IMAGE", `Combo "${modelStr}" with ${comboModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return handleComboChat({
+        body,
+        models: comboModels,
+        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
+        log,
+        comboName: modelStr,
+        comboStrategy,
+        comboStickyLimit,
+      });
+    }
+    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
+  };
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
+  if (wantsStream && !binaryOutput) return sseFromResponse(run());
+  return run();
+}
+
+// Wrap a (possibly slow) JSON Response promise as SSE: `progress` every 10s, then `done` with the
+// OpenAI-style body or `error` with status + message.
+function sseFromResponse(responsePromise) {
+  const enc = new TextEncoder();
+  const startedAt = Date.now();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const send = (event, data) => {
+        if (closed) return;
+        try { controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); } catch { closed = true; }
+      };
+      const progress = () => send("progress", { stage: "generating", elapsedMs: Date.now() - startedAt });
+      progress();
+      const keepalive = setInterval(progress, 10000);
+      try {
+        const res = await responsePromise;
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch {}
+        if (res.ok && json) {
+          send("done", json);
+        } else {
+          const message = json?.error?.message || json?.error || json?.message || text || `HTTP ${res.status}`;
+          send("error", { status: res.status, message: typeof message === "string" ? message : JSON.stringify(message) });
+        }
+      } catch (err) {
+        send("error", { status: HTTP_STATUS.BAD_GATEWAY, message: err?.message || "Image generation failed" });
+      } finally {
+        clearInterval(keepalive);
+        closed = true;
+        try { controller.close(); } catch {}
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
 }
 
 async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint } = {}) {
