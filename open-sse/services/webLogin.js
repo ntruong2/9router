@@ -17,6 +17,7 @@ import { getWebLoginConfig } from "./webLoginConfig.js";
 import { getWritableDataDir } from "../utils/writableDataDir.js";
 import { pruneProfileCaches, formatBytes } from "./browserProfileCache.js";
 import { resolveSystemChromeExecutable } from "../executors/browserExecutableCheck.js";
+import { hasWebIdentityProbe, fetchWebIdentity } from "./webIdentity.js";
 
 const POLL_INTERVAL_MS = 1500;
 const LOGIN_TIMEOUT_MS = 300000;
@@ -207,6 +208,7 @@ async function runLogin(session, config) {
     // tab/popup and close the original, which made page.waitForTimeout throw and
     // killed the login mid-way. Cookies are read from the whole context anyway.
     let browserClosed = false;
+    let rejectedCredential = null;
     context.on("close", () => { browserClosed = true; });
 
     const deadline = Date.now() + LOGIN_TIMEOUT_MS;
@@ -224,6 +226,7 @@ async function runLogin(session, config) {
       const found = await harvest(context, config).catch(() => ({ ready: false }));
       if (!found.ready) continue;
 
+      let credential;
       if (config.credentialFrom === "localStorageValue") {
         const source = config.tokenSources[0];
         let val = found.localStorageValues[source.name];
@@ -233,10 +236,26 @@ async function runLogin(session, config) {
         } catch {
           // not JSON, keep raw
         }
-        session.credential = val;
+        credential = val;
       } else {
-        session.credential = found.cookieHeader;
+        credential = found.cookieHeader;
       }
+
+      // A reused profile can hold a stale/expired session (e.g. an old DeepSeek
+      // userToken) that looks "ready" on the first poll. Verify it before closing
+      // the window; if the provider rejects it, keep the window open so the user
+      // can log in again, and don't re-check the same rejected value.
+      if (credential === rejectedCredential) continue;
+      if (hasWebIdentityProbe(session.providerId)) {
+        const identity = await fetchWebIdentity(session.providerId, credential).catch(() => null);
+        if (identity?.status === "invalid") {
+          rejectedCredential = credential;
+          session.note = "Saved session expired — log in again in the browser window";
+          continue;
+        }
+      }
+
+      session.credential = credential;
       session.status = "success";
       return;
     }
