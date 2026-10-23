@@ -203,14 +203,25 @@ async function runLogin(session, config) {
     const page = context.pages()[0] || (await context.newPage());
     await page.goto(config.loginUrl, { waitUntil: "domcontentloaded", timeout: 60000 }).catch(() => {});
 
+    // Poll on a plain timer, not on the first tab: sign-in flows often open a new
+    // tab/popup and close the original, which made page.waitForTimeout throw and
+    // killed the login mid-way. Cookies are read from the whole context anyway.
+    let browserClosed = false;
+    context.on("close", () => { browserClosed = true; });
+
     const deadline = Date.now() + LOGIN_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (session.cancelled) {
         session.status = "cancelled";
         return;
       }
-      await page.waitForTimeout(POLL_INTERVAL_MS);
-      const found = await harvest(context, config);
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      if (browserClosed) {
+        session.status = "error";
+        session.error = "Browser window was closed before login completed — try again";
+        return;
+      }
+      const found = await harvest(context, config).catch(() => ({ ready: false }));
       if (!found.ready) continue;
 
       if (config.credentialFrom === "localStorageValue") {
