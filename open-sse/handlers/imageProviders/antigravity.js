@@ -3,8 +3,14 @@
 import { nowSec, sizeToAspectRatio } from "./_base.js";
 import { getExecutor } from "../../executors/index.js";
 
+// Antigravity accepts up to 10 reference images per request
+const MAX_REFERENCE_IMAGES = 10;
+
 // Convert image input (data URI or raw base64) to Gemini inlineData part
 function resolveImageInput(input) {
+  if (input && typeof input === "object") {
+    input = input.image_url?.url || input.url || input.data || input.b64_json;
+  }
   if (!input || typeof input !== "string") return null;
   // data:image/png;base64,... format
   const dataUriMatch = input.match(/^data:(image\/[^;]+);base64,(.+)$/);
@@ -16,6 +22,19 @@ function resolveImageInput(input) {
     return { inlineData: { mimeType: "image/png", data: input } };
   }
   return null;
+}
+
+// Collect reference images from the accepted request field shapes
+function collectImageInputs(body) {
+  const candidates = [
+    body.reference_images,
+    body.images,
+    body.reference_image,
+    body.image,
+  ];
+  return candidates
+    .flatMap(v => (Array.isArray(v) ? v : v ? [v] : []))
+    .slice(0, MAX_REFERENCE_IMAGES);
 }
 
 export default {
@@ -35,21 +54,30 @@ export default {
     const isImageModel = (m) => /image|imagen|image-generation/i.test(m || "");
     const targetModel = isImageModel(model) ? model : "gemini-3.1-flash-image";
 
-    // Map OpenAI-style size to an aspect ratio. Passed as imageConfig instead of a model-name
-    // suffix: suffixed names like "gemini-3.1-flash-image-3x2" broke the request upstream.
-    const imageConfig = body.size && typeof body.size === "string"
-      ? { aspectRatio: sizeToAspectRatio(body.size) }
-      : null;
+    // Aspect ratio: explicit body.aspect_ratio wins, then body.size. Passed as imageConfig rather
+    // than a model-name suffix (suffixed names like "gemini-3.1-flash-image-3x2" broke requests).
+    let ratio = null;
+    if (body.aspect_ratio && /^\d{1,2}:\d{1,2}$/.test(String(body.aspect_ratio))) {
+      ratio = String(body.aspect_ratio);
+    } else if (body.size && typeof body.size === "string") {
+      ratio = sizeToAspectRatio(body.size);
+    }
+    const imageConfig = ratio ? { aspectRatio: ratio } : null;
 
-    // Build parts: reference images first (body.image and/or body.images), then the text prompt
-    const imageInputs = [
-      ...(body.image ? [body.image] : []),
-      ...(Array.isArray(body.images) ? body.images : []),
-    ];
-    const parts = [
-      ...imageInputs.map(resolveImageInput).filter(Boolean),
-      { text: body.prompt },
-    ];
+    // Gemini image models have no negative prompt param — fold it into the prompt text
+    const prompt = body.negative_prompt
+      ? `${body.prompt}
+
+Negative prompt: ${body.negative_prompt}`
+      : body.prompt;
+
+    // Build parts: reference images first, then the text prompt
+    const parts = [];
+    for (const imageInput of collectImageInputs(body)) {
+      const inlineData = resolveImageInput(imageInput);
+      if (inlineData) parts.push(inlineData);
+    }
+    parts.push({ text: prompt });
 
     const chatBody = {
       contents: [{ role: "user", parts }],
@@ -66,7 +94,23 @@ export default {
 
     if (!result.response.ok) {
       const text = await result.response.text();
-      throw new Error(text || `HTTP ${result.response.status}`);
+      const err = new Error(text || `HTTP ${result.response.status}`);
+      err.status = result.response.status;
+      try {
+        const json = JSON.parse(text);
+        const details = json.error?.details || [];
+        for (const d of details) {
+          const resetTimeStr = d.metadata?.quotaResetTimeStamp;
+          if (resetTimeStr) {
+            const ms = new Date(resetTimeStr).getTime();
+            if (ms > Date.now()) {
+              err.resetsAtMs = ms;
+              break;
+            }
+          }
+        }
+      } catch {}
+      throw err;
     }
 
     return result.response.json();
