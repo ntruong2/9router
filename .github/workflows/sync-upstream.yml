@@ -1,0 +1,84 @@
+# Keep this fork on the latest decolua/9router release.
+# Merges upstream master into master daily; when the merge is clean and the app
+# still builds, pushes it — the aaPanel webhook then deploys it to the server.
+# On a conflict or a failed build nothing is pushed and the run fails (GitHub
+# emails the repo owner), so the server keeps running the previous version.
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "0 20 * * *" # 03:00 Asia/Ho_Chi_Minh
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Merge and build, but do not push"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add up https://github.com/decolua/9router.git
+          git fetch --no-tags up master
+          current=$(jq -r .version package.json)
+          latest=$(git show up/master:package.json | jq -r .version)
+          echo "current=$current latest=$latest"
+          if git merge-base --is-ancestor up/master HEAD; then
+            echo "Already up to date ($current)" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${{ inputs.dry_run }}" != "true" ]; then
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          elif ! git merge --no-ff --no-commit up/master; then
+            {
+              echo "### Merge conflict with upstream v$latest — nothing was pushed"
+              echo "Resolve these files by hand:"
+              git diff --name-only --diff-filter=U | sed 's/^/- /'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          else
+            # GITHUB_TOKEN may not push workflow edits, and upstream's CI is
+            # not used here: keep this fork's .github/workflows as it is.
+            git rm -r -q --cached .github/workflows
+            git checkout HEAD -- .github/workflows
+            git clean -fdq .github/workflows
+            git commit -q -m "merge upstream v$latest"
+            echo "Merged upstream v$current → v$latest" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        if: steps.merge.outputs.changed == 'true'
+        with:
+          node-version-file: .nvmrc
+
+      - name: Build check
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          npm install --no-audit --no-fund
+          node node_modules/next/dist/bin/next build --webpack
+
+      - name: Push
+        if: steps.merge.outputs.changed == 'true' && inputs.dry_run != true
+        run: git push origin HEAD:master
