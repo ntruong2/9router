@@ -28,7 +28,7 @@ const READ_IMAGE_STATE = `(() => {
     : [];
   return {
     count: msgs.length,
-    generating: !!document.querySelector('[data-test-id="thinking-overlay-content"], button[aria-label*="Stop" i]'),
+    generating: !!document.querySelector('[data-test-id="thinking-overlay-content"], button[aria-label*="Stop" i], button[aria-label*="Dừng"], button.send-button.stop'),
     images: imgs.filter((i) => i.src && !i.src.includes('gstatic') && i.w > 0),
     text: last ? (last.innerText || '').trim().slice(0, 400) : '',
   };

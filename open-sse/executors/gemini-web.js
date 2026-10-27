@@ -321,7 +321,12 @@ async function waitForGeminiComposer(page, readQuota = () => null, timeout = 100
 // attached to the DOM"). Click through a locator, which re-resolves the node,
 // and retry a few times while the page settles.
 async function focusGeminiComposer(page, attempts = 4) {
-  const composer = page.locator(".ql-editor, [contenteditable='true']").first();
+  // Prefer the prompt box itself: signed-in pages have other contenteditable
+  // nodes (notebooks, canvas) that can come first in DOM order.
+  const prompt = page.locator("rich-textarea .ql-editor, .ql-editor");
+  const composer = (await prompt.count()) > 0
+    ? prompt.first()
+    : page.locator("[contenteditable='true']").first();
   for (let i = 1; ; i++) {
     try {
       await composer.click({ timeout: 5000 });
@@ -331,6 +336,30 @@ async function focusGeminiComposer(page, attempts = 4) {
       await page.waitForTimeout(500);
     }
   }
+}
+
+// Press Enter, and if the prompt is still sitting in the composer (Enter can
+// be swallowed while the page finishes loading), click the send button.
+async function submitGeminiPrompt(page) {
+  await page.keyboard.press("Enter");
+  const stillTyped = async () => {
+    try {
+      return await page.evaluate(() => {
+        const box = document.querySelector("rich-textarea .ql-editor, .ql-editor");
+        return !!box && (box.innerText || "").trim().length > 0;
+      });
+    } catch {
+      return false;
+    }
+  };
+  for (let i = 0; i < 6; i++) {
+    await page.waitForTimeout(500);
+    if (!(await stillTyped())) return;
+  }
+  const send = page
+    .locator("button.send-button, button[aria-label*='Send' i], button[aria-label*='Gửi']")
+    .first();
+  await send.click({ timeout: 5000 }).catch(() => {});
 }
 
 /**
@@ -603,7 +632,7 @@ export class GeminiWebExecutor extends BaseExecutor {
       // the 30s response-wait timeout.
       await page.keyboard.insertText(prompt);
       await page.waitForTimeout(300);
-      await page.keyboard.press("Enter");
+      await submitGeminiPrompt(page);
 
       // Reply capture is DOM-based (see ./gemini-web/domCapture.js): the
       // current client streams over batchexecute rpcids that Google rotates,
@@ -789,7 +818,7 @@ export class GeminiWebExecutor extends BaseExecutor {
         await focusGeminiComposer(page);
         await page.keyboard.insertText(buildImagePrompt(prompt, size));
         await page.waitForTimeout(300);
-        await page.keyboard.press("Enter");
+        await submitGeminiPrompt(page);
         const media = await waitForGeminiImage(page, { signal });
         results.push(media);
       } finally {
