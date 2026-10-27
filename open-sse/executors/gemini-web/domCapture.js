@@ -21,7 +21,7 @@ const READ_REPLY_STATE = `(() => {
   return {
     count: msgs.length,
     lastText: last,
-    generating: !!document.querySelector('[data-test-id="thinking-overlay-content"], button[aria-label*="Stop" i]'),
+    generating: !!document.querySelector('[data-test-id="thinking-overlay-content"], button[aria-label*="Stop" i], button[aria-label*="Dừng"], button[aria-label*="Ngừng"]'),
   };
 })()`;
 
