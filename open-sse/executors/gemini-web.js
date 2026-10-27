@@ -316,6 +316,23 @@ async function waitForGeminiComposer(page, readQuota = () => null, timeout = 100
   throw new Error(`Gemini composer did not appear within ${Math.round(timeout / 1000)}s (final URL: ${url})`);
 }
 
+// Gemini re-renders the composer right after it first appears, so a handle
+// from waitForGeminiComposer can detach before it is clicked ("Element is not
+// attached to the DOM"). Click through a locator, which re-resolves the node,
+// and retry a few times while the page settles.
+async function focusGeminiComposer(page, attempts = 4) {
+  const composer = page.locator(".ql-editor, [contenteditable='true']").first();
+  for (let i = 1; ; i++) {
+    try {
+      await composer.click({ timeout: 5000 });
+      return;
+    } catch (error) {
+      if (i >= attempts) throw error;
+      await page.waitForTimeout(500);
+    }
+  }
+}
+
 /**
  * Parse cookie string, stripping attributes (Path, Domain, Expires, etc.)
  * Input: full browser cookie string or just "name=value; name2=value2"
@@ -576,8 +593,8 @@ export class GeminiWebExecutor extends BaseExecutor {
       }
 
       // Type and send message
-      const inputEl = await waitForGeminiComposer(page, readQuota);
-      await inputEl.click();
+      await waitForGeminiComposer(page, readQuota);
+      await focusGeminiComposer(page);
       // insertText() dispatches a DOM `input` event atomically instead of a
       // per-character keydown/keypress/keyup sequence — an embedded `\n` in
       // `prompt` no longer fires the composer's Enter-submits-the-message
@@ -768,8 +785,8 @@ export class GeminiWebExecutor extends BaseExecutor {
         await context.addCookies(toPlaywrightCookies(cookie, ".google.com"));
         const page = await context.newPage();
         const readQuota = await openGeminiApp(page);
-        const inputEl = await waitForGeminiComposer(page, readQuota);
-        await inputEl.click();
+        await waitForGeminiComposer(page, readQuota);
+        await focusGeminiComposer(page);
         await page.keyboard.insertText(buildImagePrompt(prompt, size));
         await page.waitForTimeout(300);
         await page.keyboard.press("Enter");
