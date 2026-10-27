@@ -93,6 +93,19 @@ export function buildImagePrompt(prompt, size) {
   return `Generate an image${hints}: ${prompt}`;
 }
 
+// What the page shows when nothing recognizable happened (dialog, sign-in
+// wall, changed layout) — appended to errors so the cause is visible in logs.
+async function describePage(page) {
+  try {
+    const text = await page.evaluate(() =>
+      ((document.querySelector("main") || document.body)?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 300)
+    );
+    return ` (page: ${page.url()}${text ? ` — "${text}"` : ""})`;
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Wait for the generated image inside the reply that follows the just-sent
  * message and return it as base64. Completion: an <img> with a real
@@ -107,7 +120,9 @@ export async function waitForGeminiImage(page, { timeoutMs = IMAGE_TIMEOUT_MS, s
 
   while (true) {
     if (signal?.aborted) throw new Error("Request aborted");
-    if (Date.now() - started > timeoutMs) throw new Error(withReply("Gemini image generation timed out"));
+    if (Date.now() - started > timeoutMs) {
+      throw new Error(withReply("Gemini image generation timed out") + (lastText ? "" : await describePage(page)));
+    }
     await sleep(POLL_INTERVAL_MS);
 
     const st = await readImageState(page);
@@ -117,7 +132,7 @@ export async function waitForGeminiImage(page, { timeoutMs = IMAGE_TIMEOUT_MS, s
     }
     if (st.count > 0 || st.generating) sawActivity = true;
     if (!sawActivity && Date.now() - started > FIRST_TOKEN_TIMEOUT_MS) {
-      throw new Error("no first sign of activity from Gemini");
+      throw new Error(`no first sign of activity from Gemini${await describePage(page)}`);
     }
 
     const ready = st.images.filter((i) => i.w >= MIN_IMAGE_EDGE);
