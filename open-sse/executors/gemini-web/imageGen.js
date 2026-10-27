@@ -19,20 +19,31 @@ const TEXT_ONLY_GRACE_MS = 30000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Newer (signed-in) layouts may not use the model-response/message-content
+// tags or an English "Stop" label, so also accept the sent user query and a
+// stop-icon button as activity, and fall back to the chat area for images.
 const READ_IMAGE_STATE = `(() => {
   const msgs = [...document.querySelectorAll('model-response, message-content')];
   const last = msgs.length ? msgs[msgs.length - 1] : null;
-  const imgs = last
-    ? [...last.querySelectorAll('img')].map((i) => ({
+  const queries = document.querySelectorAll('user-query, [data-test-id*="user-query"], .user-query-container, .query-text').length;
+  const scope = last || document.querySelector('chat-window, .chat-history, main');
+  const imgs = scope
+    ? [...scope.querySelectorAll('img')].map((i) => ({
         src: i.currentSrc || i.src || '',
         w: i.naturalWidth || 0,
         h: i.naturalHeight || 0,
       }))
     : [];
+  const stopButton = [...document.querySelectorAll('button')].some((b) => {
+    const label = b.getAttribute('aria-label') || '';
+    const icon = b.querySelector('mat-icon');
+    const iconName = icon ? (icon.getAttribute('fonticon') || icon.getAttribute('data-mat-icon-name') || icon.textContent || '').trim() : '';
+    return /stop|dừng|ngừng/i.test(label) || /^stop/i.test(iconName) || b.classList.contains('stop');
+  });
   return {
-    count: msgs.length,
-    generating: !!document.querySelector('[data-test-id="thinking-overlay-content"], button[aria-label*="Stop" i], button[aria-label*="Dừng"], button.send-button.stop'),
-    images: imgs.filter((i) => i.src && !i.src.includes('gstatic') && i.w > 0),
+    count: msgs.length + queries,
+    generating: stopButton || !!document.querySelector('[data-test-id="thinking-overlay-content"]'),
+    images: imgs.filter((i) => i.src && !i.src.includes('gstatic') && !i.src.includes('googleusercontent.com/a/') && i.w > 0),
     text: last ? (last.innerText || '').trim().slice(0, 400) : '',
   };
 })()`;
