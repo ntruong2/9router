@@ -338,6 +338,32 @@ async function focusGeminiComposer(page, attempts = 4) {
   }
 }
 
+// Signed-in pages keep re-rendering the composer for a while after it first
+// appears, wiping text typed into the old node. Type, read it back, and retry
+// until the prompt is actually in the box.
+async function typeGeminiPrompt(page, text, attempts = 4) {
+  await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+  const typedLength = () =>
+    page
+      .evaluate(() => {
+        const box = document.querySelector("rich-textarea .ql-editor, .ql-editor");
+        return box ? (box.innerText || "").trim().length : 0;
+      })
+      .catch(() => 0);
+  for (let i = 1; i <= attempts; i++) {
+    await focusGeminiComposer(page);
+    if ((await typedLength()) > 0) {
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
+      await page.keyboard.press("Backspace");
+    }
+    await page.keyboard.insertText(text);
+    await page.waitForTimeout(700);
+    if ((await typedLength()) > 0) return;
+    await page.waitForTimeout(1000);
+  }
+  throw new Error("Could not type the prompt into the Gemini composer (it kept re-rendering)");
+}
+
 // Press Enter, and if the prompt is still sitting in the composer (Enter can
 // be swallowed while the page finishes loading), click the send button.
 async function submitGeminiPrompt(page) {
@@ -623,15 +649,13 @@ export class GeminiWebExecutor extends BaseExecutor {
 
       // Type and send message
       await waitForGeminiComposer(page, readQuota);
-      await focusGeminiComposer(page);
       // insertText() dispatches a DOM `input` event atomically instead of a
       // per-character keydown/keypress/keyup sequence — an embedded `\n` in
       // `prompt` no longer fires the composer's Enter-submits-the-message
       // handler before this function's own explicit Enter below. It also
       // removes the fixed 10ms/char typing cost that made long prompts race
       // the 30s response-wait timeout.
-      await page.keyboard.insertText(prompt);
-      await page.waitForTimeout(300);
+      await typeGeminiPrompt(page, prompt);
       await submitGeminiPrompt(page);
 
       // Reply capture is DOM-based (see ./gemini-web/domCapture.js): the
@@ -815,9 +839,7 @@ export class GeminiWebExecutor extends BaseExecutor {
         const page = await context.newPage();
         const readQuota = await openGeminiApp(page);
         await waitForGeminiComposer(page, readQuota);
-        await focusGeminiComposer(page);
-        await page.keyboard.insertText(buildImagePrompt(prompt, size));
-        await page.waitForTimeout(300);
+        await typeGeminiPrompt(page, buildImagePrompt(prompt, size));
         await submitGeminiPrompt(page);
         const media = await waitForGeminiImage(page, { signal });
         results.push(media);
