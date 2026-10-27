@@ -10,6 +10,9 @@ const POLL_INTERVAL_MS = 1000;
 const IMAGE_TIMEOUT_MS = 120000;
 const FIRST_TOKEN_TIMEOUT_MS = 30000;
 const MIN_IMAGE_EDGE = 100;
+// A finished text-only reply (refusal, sign-in/quota notice) never turns into
+// an image; give up after it has been idle this long instead of the full timeout.
+const TEXT_ONLY_GRACE_MS = 30000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,16 +30,17 @@ const READ_IMAGE_STATE = `(() => {
     count: msgs.length,
     generating: !!document.querySelector('[data-test-id="thinking-overlay-content"], button[aria-label*="Stop" i]'),
     images: imgs.filter((i) => i.src && !i.src.includes('gstatic') && i.w > 0),
+    text: last ? (last.innerText || '').trim().slice(0, 400) : '',
   };
 })()`;
 
 async function readImageState(page) {
   try {
     return (
-      (await page.evaluate(READ_IMAGE_STATE)) || { count: 0, generating: false, images: [] }
+      (await page.evaluate(READ_IMAGE_STATE)) || { count: 0, generating: false, images: [], text: "" }
     );
   } catch {
-    return { count: 0, generating: false, images: [] };
+    return { count: 0, generating: false, images: [], text: "" };
   }
 }
 
@@ -97,13 +101,20 @@ export function buildImagePrompt(prompt, size) {
 export async function waitForGeminiImage(page, { timeoutMs = IMAGE_TIMEOUT_MS, signal }) {
   const started = Date.now();
   let sawActivity = false;
+  let lastText = "";
+  let textSince = 0;
+  const withReply = (message) => (lastText ? `${message} — Gemini replied: ${lastText}` : message);
 
   while (true) {
     if (signal?.aborted) throw new Error("Request aborted");
-    if (Date.now() - started > timeoutMs) throw new Error("Gemini image generation timed out");
+    if (Date.now() - started > timeoutMs) throw new Error(withReply("Gemini image generation timed out"));
     await sleep(POLL_INTERVAL_MS);
 
     const st = await readImageState(page);
+    if (st.text !== lastText) {
+      lastText = st.text || "";
+      textSince = Date.now();
+    }
     if (st.count > 0 || st.generating) sawActivity = true;
     if (!sawActivity && Date.now() - started > FIRST_TOKEN_TIMEOUT_MS) {
       throw new Error("no first sign of activity from Gemini");
@@ -114,6 +125,9 @@ export async function waitForGeminiImage(page, { timeoutMs = IMAGE_TIMEOUT_MS, s
       const image = ready[ready.length - 1];
       const media = await fetchImageAsBase64(page, image.src);
       return { ...media, width: image.w, height: image.h };
+    }
+    if (lastText && !st.generating && st.images.length === 0 && Date.now() - textSince > TEXT_ONLY_GRACE_MS) {
+      throw new Error(withReply("Gemini did not return an image"));
     }
   }
 }
