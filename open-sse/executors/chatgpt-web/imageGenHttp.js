@@ -233,8 +233,12 @@ async function pollConversationImages(ctx, conversationId, initial, { signal, lo
   throw new ChatGptWebImageError("ChatGPT image generation timed out", 504);
 }
 
-async function downloadUrl(url, signal) {
-  const res = await fetchWithTimeout(url, {}, DOWNLOAD_TIMEOUT_MS, signal);
+// download_url can be relative (/backend-api/estuary/content?...) and chatgpt.com
+// URLs need the session; signed CDN URLs are fetched bare.
+async function downloadUrl(ctx, url, signal) {
+  const target = new URL(url, ctx.baseUrl);
+  const sameOrigin = target.origin === new URL(ctx.baseUrl).origin;
+  const res = await fetchWithTimeout(target.href, sameOrigin ? { headers: authHeaders(ctx) } : {}, DOWNLOAD_TIMEOUT_MS, signal);
   if (!res.ok) return null;
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!buffer.length) return null;
@@ -244,22 +248,29 @@ async function downloadUrl(url, signal) {
   };
 }
 
-/** Resolve one generated id into { b64, mime }. */
-async function downloadGeneratedImage(ctx, conversationId, { fileIds, sedimentIds }, signal) {
+/** Resolve the generated ids into { b64, mime }, or null when none is downloadable yet. */
+async function downloadGeneratedImage(ctx, conversationId, { fileIds, sedimentIds }, signal, log) {
   const jsonHeaders = { ...authHeaders(ctx), Accept: "application/json" };
 
-  for (const fileId of fileIds) {
+  // Newest first: earlier ids can be in-progress previews of the same image.
+  for (const fileId of [...fileIds].reverse()) {
     const res = await fetchWithTimeout(`${ctx.baseUrl}/backend-api/files/${fileId}/download`, { headers: jsonHeaders }, 60000, signal)
       .catch(() => null);
-    if (!res?.ok) continue;
+    if (!res?.ok) {
+      log?.debug?.("CGPT-WEB-IMG", `file ${fileId} download status ${res?.status ?? "network"}`);
+      continue;
+    }
     const body = await res.json().catch(() => null);
     const url = body?.download_url || body?.url || "";
-    if (!url) continue;
-    const media = await downloadUrl(url, signal);
+    if (!url) {
+      log?.debug?.("CGPT-WEB-IMG", `file ${fileId} not ready (${body?.status || "no url"})`);
+      continue;
+    }
+    const media = await downloadUrl(ctx, url, signal).catch(() => null);
     if (media) return media;
   }
 
-  for (const sedimentId of sedimentIds) {
+  for (const sedimentId of [...sedimentIds].reverse()) {
     const res = await fetchWithTimeout(
       `${ctx.baseUrl}/backend-api/conversation/${conversationId}/attachment/${sedimentId}/download`,
       { headers: jsonHeaders },
@@ -270,11 +281,11 @@ async function downloadGeneratedImage(ctx, conversationId, { fileIds, sedimentId
     const body = await res.json().catch(() => null);
     const url = body?.download_url || body?.url || "";
     if (!url) continue;
-    const media = await downloadUrl(url, signal);
+    const media = await downloadUrl(ctx, url, signal).catch(() => null);
     if (media) return media;
   }
 
-  throw new ChatGptWebImageError("ChatGPT image generation produced no downloadable file", 502);
+  return null;
 }
 
 /**
@@ -310,11 +321,23 @@ export async function generateChatGptWebImageHttp({
   if (!initial.conversationId && initial.fileIds.length === 0 && initial.sedimentIds.length === 0) {
     throw new ChatGptWebImageError("ChatGPT image conversation produced no conversation id", 502);
   }
-  const ids = initial.fileIds.length > 0 || initial.sedimentIds.length > 0
+  let ids = initial.fileIds.length > 0 || initial.sedimentIds.length > 0
     ? initial
     : await pollConversationImages(ctx, initial.conversationId, initial, { signal, log });
 
-  return downloadGeneratedImage(ctx, initial.conversationId, ids, signal);
+  // Ids can show up (in the SSE or the conversation) before the image is
+  // finished, so a first failed download is not final: re-read the
+  // conversation for newer ids and retry until the poll window runs out.
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (true) {
+    const media = await downloadGeneratedImage(ctx, initial.conversationId, ids, signal, log);
+    if (media) return media;
+    if (!initial.conversationId || Date.now() > deadline) {
+      throw new ChatGptWebImageError("ChatGPT image generation produced no downloadable file", 502);
+    }
+    log?.info?.("CGPT-WEB-IMG", "image not downloadable yet, polling the conversation again");
+    ids = await pollConversationImages(ctx, initial.conversationId, ids, { signal, log });
+  }
 }
 
 export { SENTINEL_HEADERS };
