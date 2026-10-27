@@ -6,6 +6,9 @@
 // (possibly blob:) image in-page as base64. Verified live: 1024×572 blob image
 // in ~26s.
 
+import os from "node:os";
+import path from "node:path";
+
 const POLL_INTERVAL_MS = 1000;
 const IMAGE_TIMEOUT_MS = 120000;
 const FIRST_TOKEN_TIMEOUT_MS = 30000;
@@ -96,11 +99,22 @@ export function buildImagePrompt(prompt, size) {
 // What the page shows when nothing recognizable happened (dialog, sign-in
 // wall, changed layout) — appended to errors so the cause is visible in logs.
 async function describePage(page) {
+  // Last failure's screenshot, for debugging on the server.
+  await page.screenshot({ path: path.join(os.tmpdir(), "gemini-web-last.png") }).catch(() => {});
   try {
-    const text = await page.evaluate(() =>
-      ((document.querySelector("main") || document.body)?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 300)
-    );
-    return ` (page: ${page.url()}${text ? ` — "${text}"` : ""})`;
+    const info = await page.evaluate(() => {
+      const box = document.querySelector("rich-textarea .ql-editor, .ql-editor");
+      const send = document.querySelector("button.send-button, button[aria-label*='Send' i], button[aria-label*='Gửi']");
+      const active = document.activeElement;
+      return {
+        text: ((document.querySelector("main") || document.body)?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 300),
+        composer: box ? `${(box.innerText || "").trim().length} chars` : "missing",
+        send: send ? `${send.getAttribute("aria-label") || send.className}${send.disabled || send.getAttribute("aria-disabled") === "true" ? " (disabled)" : ""}` : "missing",
+        focus: active ? `${active.tagName.toLowerCase()}.${String(active.className || "").split(" ")[0]}` : "none",
+        dialogs: document.querySelectorAll("[role='dialog'], mat-dialog-container, .cdk-overlay-pane").length,
+      };
+    });
+    return ` (page: ${page.url()}; composer: ${info.composer}; send: ${info.send}; focus: ${info.focus}; dialogs: ${info.dialogs}${info.text ? ` — "${info.text}"` : ""})`;
   } catch {
     return "";
   }
