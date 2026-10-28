@@ -459,6 +459,63 @@ function resolveGeminiWebCookie(credentials) {
     .join("; ");
 }
 
+/** Browser profile of a Login-via-Browser connection ("" for pasted cookies). */
+function resolveGeminiProfile(credentials) {
+  const providerSpecificData = credentials?.providerSpecificData;
+  if (providerSpecificData?.authMethod !== "web-login") return "";
+  return readProviderSpecificString(providerSpecificData, ["browserProfile"]);
+}
+
+/**
+ * Open a Gemini tab for this connection. A Login-via-Browser connection drives
+ * its signed-in profile (see ./gemini-web/profileBrowser.js); a pasted cookie
+ * gets a throwaway context on the shared headless browser.
+ * @returns {Promise<{ page: import("playwright-core").Page, profile: string, release: () => Promise<void> }>}
+ */
+async function openGeminiPage(credentials, cookie) {
+  const profile = resolveGeminiProfile(credentials);
+  if (profile) {
+    const { acquireGeminiProfilePage } = await import("./gemini-web/profileBrowser.js");
+    return { ...(await acquireGeminiProfilePage(profile)), profile };
+  }
+  const { acquireGeminiBrowser, releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
+  const browser = await acquireGeminiBrowser(launchGeminiChromium);
+  let context = null;
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    await context?.close().catch(() => {});
+    await releaseGeminiBrowser(browser);
+  };
+  try {
+    context = await browser.newContext({ userAgent: GEMINI_USER_AGENT });
+    await context.addCookies(toPlaywrightCookies(cookie, ".google.com"));
+    const page = await context.newPage();
+    return { page, profile: "", release };
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+const GEMINI_SIGNED_OUT = "GEMINI_SIGNED_OUT";
+
+/** A signed-out profile still gets a composer (guest chat): look for "Sign in". */
+async function assertGeminiSignedIn(page, profile) {
+  if (!profile) return;
+  const signIn = await page
+    .locator("a[href*='ServiceLogin'], a[href*='accounts.google.com/signin'], a[href*='accounts.google.com/v3/signin']")
+    .count()
+    .catch(() => 0);
+  if (signIn === 0) return;
+  const error = new Error(
+    `Gemini browser profile "${profile}" is signed out of Google — open dashboard/providers/gemini-web and click Login via Browser`
+  );
+  error.code = GEMINI_SIGNED_OUT;
+  throw error;
+}
+
 function errorResponse(status, error, extraHeaders = {}) {
   return new Response(JSON.stringify({ error }), {
     status,
@@ -558,31 +615,18 @@ export class GeminiWebExecutor extends BaseExecutor {
     // below, before anything is typed.
     const modelId = model || DEFAULT_MODEL_ID;
 
-    let browser = null;
-    let context = null;
+    let lease = null;
     let abortBrowser = null;
     try {
       if (signal?.aborted) {
         throw signal.reason instanceof Error ? signal.reason : new Error("Request aborted");
       }
-      const { acquireGeminiBrowser } = await import("./gemini-web/browserLease.js");
-      browser = await acquireGeminiBrowser(launchGeminiChromium);
-      // Holder so the abort listener keeps working after the streaming path
-      // moves context ownership into the ReadableStream.
-      const session = { context: null };
+      lease = await openGeminiPage(credentials, cookie);
+      const page = lease.page;
       abortBrowser = () => {
-        void session.context?.close().catch(() => {});
+        void page.close().catch(() => {});
       };
       signal?.addEventListener("abort", abortBrowser, { once: true });
-
-      context = await browser.newContext({
-        userAgent: GEMINI_USER_AGENT,
-      });
-      session.context = context;
-
-      await context.addCookies(toPlaywrightCookies(cookie, ".google.com"));
-
-      const page = await context.newPage();
 
       const readQuota = await openGeminiApp(page);
       if (signal?.aborted) {
@@ -591,6 +635,7 @@ export class GeminiWebExecutor extends BaseExecutor {
       // The composer selector is the readiness check. A fixed sleep ran even
       // when the editor was already there, and still raced a slow load.
       await waitForGeminiComposer(page, readQuota);
+      await assertGeminiSignedIn(page, lease.profile);
 
       // Verify the requested Gemini UI mode is actually active BEFORE anything
       // is typed. `gemini-3.1-pro` is the mode gemini.google.com/app already
@@ -666,10 +711,8 @@ export class GeminiWebExecutor extends BaseExecutor {
       if (stream) {
         const encoder = new TextEncoder();
         const streamPage = page;
-        const streamContext = context;
-        const streamBrowser = browser;
-        context = null; // ownership moves into the stream
-        browser = null;
+        const streamLease = lease;
+        lease = null; // ownership moves into the stream
         const readable = new ReadableStream(
           {
             async start(controller) {
@@ -699,10 +742,7 @@ export class GeminiWebExecutor extends BaseExecutor {
                 controller.enqueue(encoder.encode(SSE_DONE));
                 controller.close();
               } finally {
-                await streamPage.close().catch(() => {});
-                await streamContext.close().catch(() => {});
-                const { releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
-                await releaseGeminiBrowser(streamBrowser);
+                await streamLease.release();
               }
             },
           },
@@ -741,6 +781,14 @@ export class GeminiWebExecutor extends BaseExecutor {
       // connection-cooldown hint so accountFallback skips the provider circuit
       // breaker and applies a short, non-exponential cooldown instead of
       // looping on a retryable 500.
+      if (error?.code === GEMINI_SIGNED_OUT) {
+        return {
+          response: errorResponse(401, rawMessage),
+          url: GEMINI_URL,
+          headers: {},
+          transformedBody: body,
+        };
+      }
       if (isMissingBrowserExecutable(rawMessage)) {
         return {
           response: errorResponse(
@@ -781,17 +829,9 @@ export class GeminiWebExecutor extends BaseExecutor {
       };
     } finally {
       if (abortBrowser) signal?.removeEventListener("abort", abortBrowser);
-      // Close this request's context. The Chromium process stays warm until it
-      // has been idle.
-      try {
-        await context?.close();
-      } catch {
-        /* ignore close errors */
-      }
-      if (browser) {
-        const { releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
-        await releaseGeminiBrowser(browser);
-      }
+      // Close this request's tab/context. The browser stays warm until it has
+      // been idle.
+      await lease?.release();
     }
   }
 
@@ -809,30 +849,19 @@ export class GeminiWebExecutor extends BaseExecutor {
 
     const results = [];
     for (let i = 0; i < Math.max(1, n); i++) {
-      let browser = null;
-      let context = null;
+      let lease = null;
       try {
-        const { acquireGeminiBrowser } = await import("./gemini-web/browserLease.js");
-        browser = await acquireGeminiBrowser(launchGeminiChromium);
-        context = await browser.newContext({ userAgent: GEMINI_USER_AGENT });
-        await context.addCookies(toPlaywrightCookies(cookie, ".google.com"));
-        const page = await context.newPage();
+        lease = await openGeminiPage(credentials, cookie);
+        const page = lease.page;
         const readQuota = await openGeminiApp(page);
         await waitForGeminiComposer(page, readQuota);
+        await assertGeminiSignedIn(page, lease.profile);
         await typeGeminiPrompt(page, buildImagePrompt(prompt, size));
         await submitGeminiPrompt(page);
         const media = await waitForGeminiImage(page, { signal });
         results.push(media);
       } finally {
-        try {
-          await context?.close();
-        } catch {
-          /* ignore close errors */
-        }
-        if (browser) {
-          const { releaseGeminiBrowser } = await import("./gemini-web/browserLease.js");
-          await releaseGeminiBrowser(browser);
-        }
+        await lease?.release();
       }
     }
     return results;
