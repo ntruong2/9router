@@ -27,7 +27,9 @@ export async function GET(request) {
   if (session.status === "success" && !session.savedConnectionId) {
     try {
       const config = getWebLoginConfig(provider);
-      const identity = await fetchWebIdentity(provider, session.credential);
+      const identity = config?.serverProbe === false
+        ? { status: "unknown", email: "" }
+        : await fetchWebIdentity(provider, session.credential);
       // A login that just finished in the browser is authoritative: an
       // "invalid" verdict here means the probe endpoint rejected the request
       // shape, not that the user's session is stale.

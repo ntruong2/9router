@@ -273,7 +273,7 @@ async function runLogin(session, config) {
       // the window; if the provider rejects it, keep the window open so the user
       // can log in again, and don't re-check the same rejected value.
       if (credential === rejectedCredential) continue;
-      if (hasWebIdentityProbe(session.providerId)) {
+      if (config.serverProbe !== false && hasWebIdentityProbe(session.providerId)) {
         const identity = await fetchWebIdentity(session.providerId, credential).catch(() => null);
         if (identity?.status === "invalid") {
           rejectedCredential = credential;

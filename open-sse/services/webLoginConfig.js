@@ -25,6 +25,10 @@ export const WEB_LOGIN_CONFIGS = {
     loginUrl: "https://gemini.google.com/",
     cookieDomain: ".google.com",
     cookieUrl: "https://gemini.google.com/",
+    // Never replay the captured cookies from the server: Google reads a
+    // second client (Node, different UA) on a fresh session as cookie theft
+    // and signs the profile out of google.com right after the login.
+    serverProbe: false,
     // PSID alone identifies the session; PSIDTS rotates and is often absent.
     tokenSources: [
       { type: "cookie", name: "__Secure-1PSID" },
