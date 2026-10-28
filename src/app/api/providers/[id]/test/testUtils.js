@@ -29,7 +29,6 @@ import {
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
 import { hasWebIdentityProbe, fetchWebIdentity } from "open-sse/services/webIdentity.js";
-import { getWebLoginConfig } from "open-sse/services/webLoginConfig.js";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -580,14 +579,6 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
   // only meaningful test — the generic key probes have no way to read a cookie
   // header. An inconclusive probe keeps the connection active so a network
   // hiccup cannot mark a healthy session as broken.
-  // A connection that drives its signed-in browser profile is never probed from
-  // the server — replaying its cookies elsewhere gets the profile signed out.
-  if (
-    connection.providerSpecificData?.browserProfile &&
-    getWebLoginConfig(connection.provider)?.serverProbe === false
-  ) {
-    return { valid: true, error: null };
-  }
   if (hasWebIdentityProbe(connection.provider)) {
     const identity = await fetchWebIdentity(connection.provider, connection.apiKey || "");
     if (identity.status === "valid") return { valid: true, error: null };
