@@ -48,6 +48,8 @@ export async function GET(request) {
       session.accountEmail = email;
       const providerSpecificData = {
         authMethod: "web-login",
+        // Profile the login ran in — Gemini Web drives it directly.
+        ...(session.profile ? { browserProfile: session.profile } : {}),
         ...(config?.credentialFrom === "localStorageValue" ? { tokenSource: "localStorage" } : {}),
       };
 

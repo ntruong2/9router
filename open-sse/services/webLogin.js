@@ -28,6 +28,24 @@ function profileDir(profileName) {
   return path.join(getWritableDataDir(), "browser-profiles", sanitizeProfileName(profileName));
 }
 
+export { profileDir as webLoginProfileDir };
+
+// Other users of a profile (e.g. Gemini Web driving it) register a closer so a
+// login can take the profile over — Chromium opens a profile only once.
+const profileClosers = new Map(); // profileName -> Set<() => Promise<void>>
+
+export function registerProfileCloser(profileName, close) {
+  const profile = sanitizeProfileName(profileName);
+  if (!profileClosers.has(profile)) profileClosers.set(profile, new Set());
+  profileClosers.get(profile).add(close);
+}
+
+async function closeProfileUsers(profile) {
+  for (const close of profileClosers.get(profile) || []) {
+    await Promise.resolve().then(close).catch(() => {});
+  }
+}
+
 function matchesDomain(cookieDomain, cookie) {
   const want = String(cookieDomain || "").replace(/^\./, "").toLowerCase();
   const host = String(cookie.domain || "").replace(/^\./, "").toLowerCase();
@@ -111,6 +129,10 @@ const sessions = new Map();
 // One Chromium lock per profile dir: a second launch on the same persistent
 // profile fails, so refuse up front with an actionable message.
 const busyProfiles = new Map(); // profileName -> providerId
+
+export function isWebLoginProfileBusy(profileName) {
+  return busyProfiles.has(sanitizeProfileName(profileName));
+}
 
 export function getWebLoginStatus(providerId) {
   return sessions.get(providerId) || null;
@@ -201,6 +223,7 @@ async function runLogin(session, config) {
   }
   const dir = profileDir(session.profile);
   mkdirSync(dir, { recursive: true });
+  await closeProfileUsers(session.profile);
 
   const context = await launchLoginBrowser(chromium, dir, executablePath);
 
