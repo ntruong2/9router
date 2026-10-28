@@ -17,7 +17,7 @@ import path from "node:path";
 import { BaseExecutor } from "./base.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { isMissingBrowserExecutable, resolveSystemChromeExecutable } from "./browserExecutableCheck.js";
-import { acquireBrowserContext, releaseBrowserContext } from "../services/browserPool.js";
+import { acquireBrowserContext, addCookiesSafely, releaseBrowserContext } from "../services/browserPool.js";
 import {
   NEW_THREAD_URL,
   parseCookiePairs,
@@ -468,7 +468,8 @@ export class MuseWebExecutor extends BaseExecutor {
     // Re-seed the pooled context with the freshly rotated cookies every
     // request; seeding at creation alone would go stale as muse.ai rotates.
     try {
-      await pooled.context.addCookies(toMuseCookies(session.cookieHeader));
+      const rejected = await addCookiesSafely(pooled.context, toMuseCookies(session.cookieHeader));
+      if (rejected.length > 0) log?.warn?.("MUSE-WEB", `cookies rejected by Chrome: ${rejected.join(", ")}`);
     } catch {
       await releaseBrowserContext(key);
       pooled = await acquireBrowserContext(key, {

@@ -260,18 +260,40 @@ function parseCookieString(raw, domain) {
       const name = pair.slice(0, eq).trim();
       const value = pair.slice(eq + 1).trim();
       if (!name || !value) return null;
-      return {
-        name,
-        value,
-        domain: domain.startsWith(".") ? domain : `.${domain}`,
-        path: "/",
-        expires: -1,
-        httpOnly: false,
-        secure: true,
-        sameSite: "Lax",
-      };
+      return toPlaywrightCookie(name, value, domain);
     })
     .filter(Boolean);
+}
+
+/**
+ * Playwright addCookies() entry for one name/value on `domain`. `__Host-`
+ * cookies must be host-only (no Domain attribute), so they are set by url —
+ * Chrome rejects the whole addCookies() batch with "Invalid cookie fields"
+ * when one carries a Domain.
+ */
+export function toPlaywrightCookie(name, value, domain) {
+  const host = domain.replace(/^\./, "");
+  const base = { name, value, expires: -1, httpOnly: false, secure: true, sameSite: "Lax" };
+  if (name.startsWith("__Host-")) return { ...base, url: `https://${host}/` };
+  return { ...base, domain: `.${host}`, path: "/" };
+}
+
+/**
+ * addCookies() that survives a bad entry: try the batch, then fall back to one
+ * cookie at a time so a single cookie Chrome refuses does not drop the session.
+ * @returns {Promise<string[]>} names of the cookies that were rejected
+ */
+export async function addCookiesSafely(context, cookies) {
+  try {
+    await context.addCookies(cookies);
+    return [];
+  } catch {
+    const rejected = [];
+    for (const cookie of cookies) {
+      await context.addCookies([cookie]).catch(() => rejected.push(cookie.name));
+    }
+    return rejected;
+  }
 }
 
 // Clear a key from the pending-creation map once its promise settles, counting failures.
@@ -287,7 +309,7 @@ async function seedContextSession(context, options) {
   if (options.cookieString) {
     const cookies = parseCookieString(options.cookieString, options.cookieDomain);
     if (cookies.length > 0) {
-      await context.addCookies(cookies);
+      await addCookiesSafely(context, cookies);
     }
   }
 
