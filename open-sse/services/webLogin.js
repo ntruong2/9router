@@ -59,7 +59,11 @@ function findCookieValue(jar, source) {
  * Exported so the login flow can be exercised without a real browser.
  */
 export async function harvest(context, config) {
-  const cookies = (await context.cookies()).filter((cookie) => matchesDomain(config.cookieDomain, cookie));
+  // cookieUrl: take exactly the jar the browser sends to that URL. Flattening
+  // every *.google.com cookie mixed same-named host-only cookies (OSID, …)
+  // from other subdomains into the session.
+  const all = config.cookieUrl ? await context.cookies(config.cookieUrl) : await context.cookies();
+  const cookies = all.filter((cookie) => matchesDomain(config.cookieDomain, cookie));
   const jar = new Map(cookies.map((cookie) => [cookie.name, cookie.value]));
   const localStorageValues = {};
   for (const page of context.pages()) {

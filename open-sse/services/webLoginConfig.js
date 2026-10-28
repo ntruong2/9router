@@ -24,6 +24,7 @@ export const WEB_LOGIN_CONFIGS = {
   "gemini-web": {
     loginUrl: "https://gemini.google.com/",
     cookieDomain: ".google.com",
+    cookieUrl: "https://gemini.google.com/",
     // PSID alone identifies the session; PSIDTS rotates and is often absent.
     tokenSources: [
       { type: "cookie", name: "__Secure-1PSID" },
