@@ -43,6 +43,9 @@ export const PAGE_STATE = `(() => {
            && (!hydration || hydration.getAttribute('data-hatch-shell-hydration-state') === 'hydrated')
            && !body.includes('Connecting...'),
     hasInput: !!document.querySelector(${q(INPUT)}),
+    readyState: document.readyState,
+    hydration: hydration ? hydration.getAttribute('data-hatch-shell-hydration-state') : null,
+    connecting: body.includes('Connecting...'),
     path: location.pathname,
     head: body.slice(0, 800),
   };

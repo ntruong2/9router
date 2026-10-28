@@ -12,6 +12,8 @@
 // rotated jar is re-seeded into the pooled browser context each time.
 
 import { createHash } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 import { BaseExecutor } from "./base.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { isMissingBrowserExecutable, resolveSystemChromeExecutable } from "./browserExecutableCheck.js";
@@ -135,7 +137,14 @@ async function waitForThreadReady(page) {
   if (dom.LOGIN_HINTS.some((h) => head.includes(h))) {
     throw new MuseWebAuthError("muse.ai redirected to login; cookies are no longer valid");
   }
-  throw new MuseWebTimeoutError("muse.ai page did not become ready");
+  // Say which readiness check failed, and keep a screenshot for debugging.
+  await page.screenshot({ path: path.join(os.tmpdir(), "muse-web-last.png") }).catch(() => {});
+  const snippet = (state.head || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  throw new MuseWebTimeoutError(
+    `muse.ai page did not become ready (path: ${state.path || "?"}; input: ${state.hasInput ? "yes" : "no"}; ` +
+      `readyState: ${state.readyState || "?"}; hydration: ${state.hydration ?? "none"}; ` +
+      `connecting: ${state.connecting ? "yes" : "no"}${snippet ? ` — "${snippet}"` : ""})`
+  );
 }
 
 async function readChatState(page) {
