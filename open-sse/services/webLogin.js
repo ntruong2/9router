@@ -169,23 +169,31 @@ function clearStaleSingletonLocks(dir) {
   }
 }
 
+// Playwright passes --no-sandbox unless chromiumSandbox is set. Keep the
+// sandbox when the host allows it (non-root user with user namespaces) and
+// fall back only when Chromium cannot start with it (root, some containers).
+async function launchWithSandboxFallback(chromium, dir, executablePath) {
+  const options = {
+    headless: false,
+    executablePath,
+    viewport: null,
+    args: ["--disable-blink-features=AutomationControlled"],
+  };
+  try {
+    return await chromium.launchPersistentContext(dir, { ...options, chromiumSandbox: true });
+  } catch (error) {
+    if (!/sandbox|namespace|zygote/i.test(String(error?.message || ""))) throw error;
+    return await chromium.launchPersistentContext(dir, options);
+  }
+}
+
 async function launchLoginBrowser(chromium, dir, executablePath) {
   try {
-    return await chromium.launchPersistentContext(dir, {
-      headless: false,
-      executablePath,
-      viewport: null,
-      args: ["--disable-blink-features=AutomationControlled"],
-    });
+    return await launchWithSandboxFallback(chromium, dir, executablePath);
   } catch (error) {
     if (!/ProcessSingleton|SingletonLock/i.test(String(error?.message || ""))) throw error;
     clearStaleSingletonLocks(dir);
-    return await chromium.launchPersistentContext(dir, {
-      headless: false,
-      executablePath,
-      viewport: null,
-      args: ["--disable-blink-features=AutomationControlled"],
-    });
+    return await launchWithSandboxFallback(chromium, dir, executablePath);
   }
 }
 
