@@ -43,6 +43,11 @@ const GROUP_CONFIGS = [
  * Parse a retrieveUserQuotaSummary response into normalized weekly quotas.
  * Pure function — safe to unit-test without network.
  *
+ * Besides the two family groups ("Gemini Models", "Claude and GPT models"),
+ * Google can return a group for a single model with its own limit (e.g.
+ * "Gemini 4 Argon" on Pro plans). Those become `group:<slug>:weekly|session`
+ * entries instead of being folded into — and lost behind — the family rows.
+ *
  * @param {Object|null} data  Raw JSON response
  * @returns {Object}  e.g. { gemini_weekly: { used, total, ... }, claude_gpt_weekly: { ... } }
  */
@@ -75,13 +80,22 @@ export function parseWeeklyQuotaSummary(data) {
 
       if (!isWeekly && !isSession) continue;
 
-      // If a session (5h) bucket is marked disabled by upstream (because weekly was hit),
-      // keep it so the UI shows the 5h row, but with remainingFraction: 0.
-      // Disabled weekly buckets are truly disabled and skipped.
+      // A session (5h) bucket is marked disabled when the weekly limit was hit;
+      // keep its real reading (as the Antigravity app does) — the exhausted
+      // weekly row is what blocks the family. Disabled weekly buckets are skipped.
       if (bucket.disabled === true && isWeekly) continue;
 
-      const remainingFraction = bucket.disabled === true ? 0 : Number(bucket.remainingFraction);
+      const remainingFraction = Number(bucket.remainingFraction ?? 0);
       if (!Number.isFinite(remainingFraction)) continue;
+
+      const modelGroup = modelGroupSlug(displayName);
+      if (modelGroup) {
+        const key = `group:${modelGroup}:${isWeekly ? "weekly" : "session"}`;
+        if (!result[key]) {
+          result[key] = toQuota(remainingFraction, bucket.resetTime, `${displayName} (${isWeekly ? "Weekly" : "5h"})`);
+        }
+        continue;
+      }
 
       // Match group to a known family
       for (const config of GROUP_CONFIGS) {
@@ -89,18 +103,7 @@ export function parseWeeklyQuotaSummary(data) {
           const target = isWeekly ? config.weekly : config.session;
           if (result[target.key]) break; // first matching bucket per type wins
 
-          const total = 1000;
-          const remaining = Math.round(total * remainingFraction);
-          const used = Math.max(0, total - remaining);
-
-          result[target.key] = {
-            used,
-            total,
-            resetAt: parseResetTime(bucket.resetTime),
-            remainingPercentage: remainingFraction * 100,
-            unlimited: false,
-            displayName: target.displayName,
-          };
+          result[target.key] = toQuota(remainingFraction, bucket.resetTime, target.displayName);
           break;
         }
       }
@@ -108,6 +111,30 @@ export function parseWeeklyQuotaSummary(data) {
   }
 
   return result;
+}
+
+function toQuota(remainingFraction, resetTime, displayName) {
+  const total = 1000;
+  const remaining = Math.round(total * remainingFraction);
+  return {
+    used: Math.max(0, total - remaining),
+    total,
+    resetAt: parseResetTime(resetTime),
+    remainingPercentage: remainingFraction * 100,
+    unlimited: false,
+    displayName,
+  };
+}
+
+/**
+ * Slug for a group that covers one model ("Gemini 4 Argon" → "gemini-4-argon"),
+ * or null for the family groups ("Gemini Models", "Claude and GPT models").
+ */
+export function modelGroupSlug(displayName) {
+  const name = String(displayName || "").trim();
+  if (!name || /\bmodels?\b/i.test(name) || /claude|gpt/i.test(name)) return null;
+  if (!/gemini/i.test(name)) return null;
+  return name.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 /**

@@ -384,7 +384,8 @@ export function parseQuotaData(provider, data) {
           const entries = Object.entries(data.quotas);
           const weeklyKeys = new Set(["gemini_weekly", "claude_gpt_weekly"]);
           const sessionKeys = new Set(["gemini_session", "claude_gpt_session"]);
-          const summaryKeys = new Set([...weeklyKeys, ...sessionKeys]);
+          const groupKeys = entries.filter(([k]) => k.startsWith("group:")).map(([k]) => k);
+          const summaryKeys = new Set([...weeklyKeys, ...sessionKeys, ...groupKeys]);
           const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image"));
           const claudeModels = entries.filter(([k]) => k.startsWith("claude-"));
           const imageModels = entries.filter(([k]) => k.includes("image"));
@@ -487,6 +488,18 @@ export function parseQuotaData(provider, data) {
               });
             });
           }
+
+          // Model-specific groups with their own limit (e.g. Gemini 4 Argon)
+          summaryModels.filter(([k]) => k.startsWith("group:")).forEach(([modelKey, quota]) => {
+            normalizedQuotas.push({
+              name: quota.displayName || modelKey,
+              modelKey,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
 
           // 3. Standalone Image Generation Models (unique usage)
           imageModels.forEach(([modelKey, quota]) => {

@@ -489,3 +489,47 @@ describe("weekly quota isolation from existing quota", () => {
     });
   });
 });
+
+// — Model-specific groups and disabled 5h buckets (live shape, Pro plan) ——
+const PRO_PLAN_RESPONSE = {
+  groups: [
+    {
+      displayName: "Gemini Models",
+      buckets: [
+        { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 1, resetTime: "2026-11-05T11:01:06Z" },
+        { bucketId: "gemini-5h", window: "5h", remainingFraction: 1, resetTime: "2026-10-29T16:01:06Z" },
+      ],
+    },
+    {
+      displayName: "Claude and GPT models",
+      buckets: [
+        { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0, resetTime: "2026-11-04T11:06:13Z" },
+        { bucketId: "3p-5h", window: "5h", disabled: true, remainingFraction: 0.9492392, resetTime: "2026-10-29T15:38:57Z" },
+      ],
+    },
+    {
+      displayName: "Gemini 4 Argon",
+      buckets: [
+        { bucketId: "gemini-argon-wtu-weekly", window: "weekly", remainingFraction: 0.04161693, resetTime: "2026-11-04T09:06:47Z" },
+      ],
+    },
+  ],
+};
+
+describe("parseWeeklyQuotaSummary — model groups", () => {
+  it("keeps a single-model group separate from the Gemini family", () => {
+    const result = parseWeeklyQuotaSummary(PRO_PLAN_RESPONSE);
+    expect(result.gemini_weekly.remainingPercentage).toBe(100);
+    expect(result["group:gemini-4-argon:weekly"]).toMatchObject({
+      displayName: "Gemini 4 Argon (Weekly)",
+      used: 958,
+    });
+    expect(result["group:gemini-4-argon:weekly"].remainingPercentage).toBeCloseTo(4.16, 1);
+  });
+
+  it("keeps the real reading of a disabled 5h bucket", () => {
+    const result = parseWeeklyQuotaSummary(PRO_PLAN_RESPONSE);
+    expect(result.claude_gpt_weekly.remainingPercentage).toBe(0);
+    expect(result.claude_gpt_session.remainingPercentage).toBeCloseTo(94.9, 1);
+  });
+});

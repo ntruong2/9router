@@ -101,7 +101,14 @@ export function getAntigravityModelQuota(quotas, model) {
     candidates.push(quotas["gemini-3.6-flash-medium"]);
   }
 
-  // 3. Shared family summary buckets (5h session & Weekly)
+  // 3. Per-model group buckets ("Gemini 4 Argon" → group:gemini-4-argon:weekly)
+  for (const [key, quota] of Object.entries(quotas)) {
+    if (!key.startsWith("group:")) continue;
+    const slug = key.slice("group:".length, key.lastIndexOf(":"));
+    if (slug && cleanModel.toLowerCase().startsWith(slug)) candidates.push(quota);
+  }
+
+  // 4. Shared family summary buckets (5h session & Weekly)
   if (family === "claude_gpt") {
     if (quotas.claude_gpt_session) candidates.push(quotas.claude_gpt_session);
     if (quotas.claude_gpt_weekly) candidates.push(quotas.claude_gpt_weekly);

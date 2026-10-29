@@ -245,7 +245,10 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
       const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image"));
       const claudeModels = entries.filter(([k]) => k.startsWith("claude-"));
 
-      if (weeklyQuotas.gemini_session && geminiModels.length > 0) {
+      // Skip when the family's weekly limit is spent: that already explains the
+      // exhausted models, and the 5h window keeps its own reading.
+      const weeklySpent = (q) => q && (q.remainingPercentage ?? 0) === 0;
+      if (weeklyQuotas.gemini_session && geminiModels.length > 0 && !weeklySpent(weeklyQuotas.gemini_weekly)) {
         const allGeminiExhausted = geminiModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
         if (allGeminiExhausted && weeklyQuotas.gemini_session.remainingPercentage > 0) {
           const maxResetAt = geminiModels.reduce((max, [, q]) =>
@@ -259,7 +262,7 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
         }
       }
 
-      if (weeklyQuotas.claude_gpt_session && claudeModels.length > 0) {
+      if (weeklyQuotas.claude_gpt_session && claudeModels.length > 0 && !weeklySpent(weeklyQuotas.claude_gpt_weekly)) {
         const allClaudeExhausted = claudeModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
         if (allClaudeExhausted && weeklyQuotas.claude_gpt_session.remainingPercentage > 0) {
           const maxResetAt = claudeModels.reduce((max, [, q]) =>
