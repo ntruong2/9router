@@ -5,7 +5,6 @@
 // looked like the same failure in unrelated sessions.
 import { describe, expect, it } from "vitest";
 import { checkFallbackError } from "../../open-sse/services/accountFallback.js";
-import { CREDIT_EXHAUSTED_COOLDOWN_MS } from "../../open-sse/config/errorConfig.js";
 
 describe("checkFallbackError — request-scoped vs account-scoped failures", () => {
   it("does not cool the account down for a 400 caused by the request", () => {
@@ -36,13 +35,12 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     "Insufficient credit balance",
     "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
     "CREDIT BALANCE IS TOO LOW",
-  ])("locks the credential for the credit-exhausted window on a 400 credit error: %s", (message) => {
+  ])("falls back with backoff for a 400 credit error: %s", (message) => {
     expect(checkFallbackError(400, message)).toEqual({
-      shouldFallback: true, cooldownMs: CREDIT_EXHAUSTED_COOLDOWN_MS,
+      shouldFallback: true, cooldownMs: 2000, newBackoffLevel: 1,
     });
-    // No escalating backoff: the window is fixed and does not restart at a few seconds.
-    expect(checkFallbackError(400, message, 3)).toEqual({
-      shouldFallback: true, cooldownMs: CREDIT_EXHAUSTED_COOLDOWN_MS,
+    expect(checkFallbackError(400, message, 1)).toEqual({
+      shouldFallback: true, cooldownMs: 4000, newBackoffLevel: 2,
     });
   });
 
