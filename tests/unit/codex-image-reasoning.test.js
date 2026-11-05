@@ -8,6 +8,9 @@ describe("Codex image adapter reasoning", () => {
     "gpt-image-2.5",
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
+    "gpt-image-2.6",
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
   ])("sends no reasoning for %s, whose complexity Codex rejects", (model) => {
     const body = codexImageAdapter.buildBody(model, { prompt: "apple" });
     expect(body.reasoning).toBeNull();

@@ -12,6 +12,9 @@ const CODEX_REF_DETAIL = "high";
 // Only drives the image_generation tool call; any chat model on the plan works as host.
 const CODEX_IMAGES_MAIN_MODEL = "gpt-6-sol";
 const CODEX_TOOL_IMAGE_MODELS = new Set([
+  "gpt-image-2.6",
+  "gpt-image-2.6-flare",
+  "gpt-image-2.6-sunburst",
   "gpt-image-1.5",
   "gpt-image-2",
   "gpt-image-2.5",
