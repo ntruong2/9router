@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { PROVIDERS, PROVIDER_OAUTH } from "../config/providers.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE, selectAnthropicBeta, mergeAnthropicBeta } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
-import { OAUTH_ENDPOINTS, buildKimiHeaders, NOUS_ATTRIBUTION } from "../config/appConstants.js";
+import { OAUTH_ENDPOINTS, buildKimiHeaders, NOUS_ATTRIBUTION, CLAUDE_SYSTEM_PROMPT } from "../config/appConstants.js";
 import { buildClineHeaders } from "../shared/clineAuth.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { injectReasoningContent } from "../utils/reasoningContentInjector.js";
@@ -90,6 +90,26 @@ const REFRESH_GRANTS = Object.fromEntries(
     })
 );
 
+function stripInjectedClaudeCodePrompt(body) {
+  if (!Array.isArray(body.system)) return;
+  body.system = body.system.filter((block) => !(block?.type === "text" && block.text === CLAUDE_SYSTEM_PROMPT));
+  if (body.system.length === 0) delete body.system;
+}
+
+// Remove one flag from Anthropic-Beta / anthropic-beta, dropping the header if it empties.
+function stripBetaFlag(headers, flag) {
+  for (const betaKey of ["anthropic-beta", "Anthropic-Beta"]) {
+    if (!headers[betaKey]) continue;
+    const filtered = headers[betaKey]
+      .split(",")
+      .map((s) => s.trim())
+      .filter((f) => f && f !== flag)
+      .join(",");
+    if (filtered) headers[betaKey] = filtered;
+    else delete headers[betaKey];
+  }
+}
+
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -104,6 +124,11 @@ export class DefaultExecutor extends BaseExecutor {
         delete transformed.client_metadata;
       }
       stripUnsupportedParams(this.provider, model, transformed);
+      // Anthropic API keys: a request that presents itself as Claude Code (the system
+      // prompt the openai->claude translator prepends) is refused with 400 "Your credit
+      // balance is too low" when the key's balance is API credit. Drop only that injected
+      // block; the caller's own system text is kept.
+      if (this.provider === "anthropic") stripInjectedClaudeCodePrompt(transformed);
     }
 
     return injectReasoningContent({ provider: this.provider, model, body: transformed });
@@ -223,6 +248,12 @@ export class DefaultExecutor extends BaseExecutor {
       headers["Anthropic-Beta"] = mergeAnthropicBeta(headers["Anthropic-Beta"], clientBeta);
     }
 
+    // Anthropic API keys: the claude-code beta bills the request as Claude Code usage,
+    // which API credit grants do not cover, so a key whose balance is promotional credit
+    // gets 400 "Your credit balance is too low" on every request while plain API calls
+    // with the same key succeed. Drop it, including when a Claude Code client forwards it.
+    if (this.provider === "anthropic") stripBetaFlag(headers, "claude-code-20250219");
+
     // Claude OAuth: align x-claude-code-session-id with metadata.user_id.session_id if missing
     if (this.provider === "claude" && !headers["x-claude-code-session-id"]) {
       const token = credentials?.accessToken || credentials?.apiKey || "";
@@ -247,21 +278,7 @@ export class DefaultExecutor extends BaseExecutor {
         delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
         delete headers["x-app"];
         delete headers["X-App"];
-        // Strip claude-code-20250219 from Anthropic-Beta / anthropic-beta
-        for (const betaKey of ["anthropic-beta", "Anthropic-Beta"]) {
-          if (headers[betaKey]) {
-            const filtered = headers[betaKey]
-              .split(",")
-              .map(s => s.trim())
-              .filter(f => f && f !== "claude-code-20250219")
-              .join(",");
-            if (filtered) {
-              headers[betaKey] = filtered;
-            } else {
-              delete headers[betaKey];
-            }
-          }
-        }
+        stripBetaFlag(headers, "claude-code-20250219");
       }
     }
 
