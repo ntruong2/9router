@@ -10,6 +10,7 @@ import { captureSessionId } from "../utils/sessionManager.js";
 import { ensureStreamToolCallIds } from "../utils/streamHelpers.js";
 import { AntigravityExecutor } from "../executors/antigravity.js";
 import { PROVIDERS } from "../providers/index.js";
+import { CLAUDE_SYSTEM_PROMPT } from "../config/appConstants.js";
 import { ROLE, GEMINI_ROLE } from "./schema/roles.js";
 
 // Registry for translators. Lazy-init guards against circular-import order:
@@ -66,6 +67,13 @@ function detectClientLastRole(body) {
 }
 
 // Translate request: source -> openai -> target
+function dropInjectedClaudeCodePrompt(body) {
+  const first = Array.isArray(body?.system) ? body.system[0] : null;
+  if (first?.type !== "text" || first.text !== CLAUDE_SYSTEM_PROMPT) return;
+  body.system = body.system.slice(1);
+  if (body.system.length === 0) delete body.system;
+}
+
 export function translateRequest(sourceFormat, targetFormat, model, body, stream = true, credentials = null, provider = null, reqLogger = null, stripList = [], connectionId = null, clientTool = null) {
   ensureInitialized();
   let result = body;
@@ -125,6 +133,13 @@ export function translateRequest(sourceFormat, targetFormat, model, body, stream
         }
       }
     }
+
+    // Anthropic API keys: the openai->claude translator prepends the Claude Code
+    // system prompt, and Anthropic does not bill API credit for requests that
+    // present as Claude Code (400 "Your credit balance is too low"). Remove the
+    // block 9router added; a client that is itself Claude Code arrives in Claude
+    // format, skips this branch and is forwarded as it is.
+    if (provider === "anthropic" && targetFormat === FORMATS.CLAUDE) dropInjectedClaudeCodePrompt(result);
   }
 
   // Normalize thinking to the target provider-native format (config-driven, capability-aware).
