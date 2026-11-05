@@ -259,6 +259,7 @@ export default {
     if (body.size && body.size !== "") imgTool.size = body.size;
     if (body.quality && body.quality !== "") imgTool.quality = body.quality;
     if (body.background && body.background !== "") imgTool.background = body.background;
+    if (toolModel && body.complexity && body.complexity !== "") imgTool.complexity = body.complexity;
     return {
       model: responsesModel,
       instructions: "",
@@ -269,9 +270,9 @@ export default {
       prompt_cache_key: randomUUID(),
       stream: true,
       store: false,
-      // Codex maps reasoning.effort to the image tool's "complexity", which the
-      // gpt-image-2-codex backend rejects at every level (400 "Complexity 'medium'
-      // is not supported for this image model"), so send no reasoning at all.
+      // Codex derives the tool's complexity from reasoning.effort and the image
+      // backend rejects that ("Complexity 'medium' is not supported for this image
+      // model"); complexity goes on the tool itself instead (see above).
       reasoning: null,
     };
   },

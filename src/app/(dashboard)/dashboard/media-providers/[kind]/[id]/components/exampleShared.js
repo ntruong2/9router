@@ -44,6 +44,7 @@ export const KIND_EXAMPLE_CONFIG = {
       { key: "n", label: "n", type: "number", default: 1, min: 1, max: 4 },
       { key: "size", label: "Size", type: "select", default: "auto", options: ["auto", "1024x1024", "1024x1536", "1536x1024", "1024x1792", "1792x1024"] },
       { key: "quality", label: "Quality", type: "select", default: "auto", options: ["auto", "low", "medium", "high", "standard", "hd"] },
+      { key: "complexity", label: "Complexity", type: "select", default: "", options: ["", "none", "low", "medium", "high", "xhigh", "max"] },
       { key: "background", label: "Background", type: "select", default: "auto", options: ["auto", "transparent", "opaque"] },
       { key: "style", label: "Style", type: "select", default: "", options: ["", "vivid", "natural"] },
       { key: "response_format", label: "Format", type: "select", default: "", options: ["", "url", "b64_json"] },
