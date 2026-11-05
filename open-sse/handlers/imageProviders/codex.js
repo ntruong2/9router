@@ -18,9 +18,6 @@ const CODEX_TOOL_IMAGE_MODELS = new Set([
   "gpt-image-2.5-flare",
   "gpt-image-2.5-sunburst",
 ]);
-// Upstream maps reasoning.effort to the tool's "complexity"; Sunburst rejects every
-// value (400 "Complexity 'medium' is not supported for this image model").
-const CODEX_NO_REASONING_IMAGE_MODELS = new Set(["gpt-image-2.5-sunburst"]);
 
 function decodeOpenAIAuthClaims(token) {
   try {
@@ -272,9 +269,10 @@ export default {
       prompt_cache_key: randomUUID(),
       stream: true,
       store: false,
-      reasoning: toolModel && !CODEX_NO_REASONING_IMAGE_MODELS.has(toolModel)
-        ? { effort: "medium", summary: "auto" }
-        : null,
+      // Codex maps reasoning.effort to the image tool's "complexity", which the
+      // gpt-image-2-codex backend rejects at every level (400 "Complexity 'medium'
+      // is not supported for this image model"), so send no reasoning at all.
+      reasoning: null,
     };
   },
   // Custom: codex parses SSE → either pipe to client or collect b64
