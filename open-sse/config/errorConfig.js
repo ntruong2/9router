@@ -41,6 +41,10 @@ export const TRANSIENT_COOLDOWN_MS = 30 * 1000;
 // Hard cap for provider-reported rate limit cooldown (e.g. codex resets_at can be 5-6h)
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 30 * 60 * 1000;
 
+// Exhausted prepaid credit never recovers on its own (someone has to top up), so
+// lock the credential for a fixed window instead of retrying it every few seconds.
+export const CREDIT_EXHAUSTED_COOLDOWN_MS = 10 * 60 * 1000;
+
 // Cooldown durations (ms)
 const COOLDOWN = {
   long: 2 * 60 * 1000,
@@ -68,8 +72,8 @@ export const ERROR_RULES = [
   { text: "rate limit",               backoff: true },
   { text: "too many requests",        backoff: true },
   { text: "quota exceeded",           backoff: true },
-  { text: "insufficient credit",      backoff: true },
-  { text: "credit balance is too low", backoff: true },
+  { text: "insufficient credit",      cooldownMs: CREDIT_EXHAUSTED_COOLDOWN_MS },
+  { text: "credit balance is too low", cooldownMs: CREDIT_EXHAUSTED_COOLDOWN_MS },
   { text: "capacity",                 backoff: true },
   { text: "overloaded",               backoff: true },
 
