@@ -242,12 +242,27 @@ export async function getAntigravityUsage(accessToken, providerSpecificData, pro
       // If every model in a family is locked/exhausted (remainingPercentage === 0)
       // until a future reset time, update the 5h session row (not the weekly row).
       const entries = Object.entries(quotas);
-      const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image"));
+      const argonModels = entries.filter(([k]) => k.startsWith("gemini-") && k.includes("argon"));
+      const geminiModels = entries.filter(([k]) => k.startsWith("gemini-") && !k.includes("image") && !k.includes("argon"));
       const claudeModels = entries.filter(([k]) => k.startsWith("claude-"));
 
       // Skip when the family's weekly limit is spent: that already explains the
       // exhausted models, and the 5h window keeps its own reading.
       const weeklySpent = (q) => q && (q.remainingPercentage ?? 0) === 0;
+      if (weeklyQuotas.gemini_argon_session && argonModels.length > 0 && !weeklySpent(weeklyQuotas.gemini_argon_weekly)) {
+        const allArgonExhausted = argonModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
+        if (allArgonExhausted && weeklyQuotas.gemini_argon_session.remainingPercentage > 0) {
+          const maxResetAt = argonModels.reduce((max, [, q]) =>
+            !max || (q.resetAt && new Date(q.resetAt) > new Date(max)) ? q.resetAt : max, null
+          );
+          weeklyQuotas.gemini_argon_session.used = weeklyQuotas.gemini_argon_session.total;
+          weeklyQuotas.gemini_argon_session.remainingPercentage = 0;
+          if (maxResetAt) {
+            weeklyQuotas.gemini_argon_session.resetAt = maxResetAt;
+          }
+        }
+      }
+
       if (weeklyQuotas.gemini_session && geminiModels.length > 0 && !weeklySpent(weeklyQuotas.gemini_weekly)) {
         const allGeminiExhausted = geminiModels.every(([, q]) => (q.remainingPercentage ?? 0) === 0);
         if (allGeminiExhausted && weeklyQuotas.gemini_session.remainingPercentage > 0) {

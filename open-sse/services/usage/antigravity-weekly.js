@@ -26,7 +26,14 @@ export function _clearWeeklyCache() {
 }
 
 // — Group-name and window to stable key mapping ——————————————————————
+// Order matters: more specific family patterns (e.g. Gemini 4 Argon) must
+// precede the broader /gemini/i matcher so they do not get skipped.
 const GROUP_CONFIGS = [
+  {
+    pattern: /argon/i,
+    weekly: { key: "gemini_argon_weekly", displayName: "Gemini 4 Argon (Weekly)" },
+    session: { key: "gemini_argon_session", displayName: "Gemini 4 Argon (5h)" },
+  },
   {
     pattern: /gemini/i,
     weekly: { key: "gemini_weekly", displayName: "Gemini (Weekly)" },
@@ -43,10 +50,10 @@ const GROUP_CONFIGS = [
  * Parse a retrieveUserQuotaSummary response into normalized weekly quotas.
  * Pure function — safe to unit-test without network.
  *
- * Besides the two family groups ("Gemini Models", "Claude and GPT models"),
- * Google can return a group for a single model with its own limit (e.g.
- * "Gemini 4 Argon" on Pro plans). Those become `group:<slug>:weekly|session`
- * entries instead of being folded into — and lost behind — the family rows.
+ * Besides the family groups ("Gemini Models", "Claude and GPT models",
+ * "Gemini 4 Argon"), Google can return a group for another single Gemini model
+ * with its own limit. Those become `group:<slug>:weekly|session` entries
+ * instead of being folded into — and lost behind — the Gemini family rows.
  *
  * @param {Object|null} data  Raw JSON response
  * @returns {Object}  e.g. { gemini_weekly: { used, total, ... }, claude_gpt_weekly: { ... } }
@@ -134,6 +141,9 @@ export function modelGroupSlug(displayName) {
   const name = String(displayName || "").trim();
   if (!name || /\bmodels?\b/i.test(name) || /claude|gpt/i.test(name)) return null;
   if (!/gemini/i.test(name)) return null;
+  // Gemini 4 Argon has dedicated gemini_argon_* keys (GROUP_CONFIGS), used by
+  // routing and the dashboard; don't duplicate it as a generic group.
+  if (/argon/i.test(name)) return null;
   return name.toLowerCase().replace(/[^a-z0-9.]+/g, "-").replace(/^-+|-+$/g, "");
 }
 

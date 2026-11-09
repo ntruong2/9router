@@ -43,11 +43,24 @@ const CLAUDE_GPT_GROUP = {
   ],
 };
 
-const FULL_RESPONSE = { groups: [GEMINI_GROUP, CLAUDE_GPT_GROUP] };
+const GEMINI_ARGON_GROUP = {
+  displayName: "Gemini 4 Argon",
+  buckets: [
+    {
+      bucketId: "gemini-argon-wtu-weekly",
+      displayName: "Gemini 4 Argon Weekly Limit",
+      window: "weekly",
+      remainingFraction: 0.43,
+      resetTime: "2026-09-10T08:17:00Z",
+    },
+  ],
+};
+
+const FULL_RESPONSE = { groups: [GEMINI_GROUP, CLAUDE_GPT_GROUP, GEMINI_ARGON_GROUP] };
 
 const NESTED_RESPONSE = {
   quotaSummary: {
-    groups: [GEMINI_GROUP, CLAUDE_GPT_GROUP],
+    groups: [GEMINI_GROUP, CLAUDE_GPT_GROUP, GEMINI_ARGON_GROUP],
   },
 };
 
@@ -85,12 +98,26 @@ describe("parseWeeklyQuotaSummary", () => {
     expect(result.claude_gpt_weekly.resetAt).toBe("2026-09-14T00:00:00.000Z");
   });
 
+  it("extracts Gemini 4 Argon weekly quota separately from Gemini Models", () => {
+    const result = parseWeeklyQuotaSummary(FULL_RESPONSE);
+    expect(result.gemini_argon_weekly).toMatchObject({
+      used: 570,
+      total: 1000,
+      remainingPercentage: 43,
+      displayName: "Gemini 4 Argon (Weekly)",
+      unlimited: false,
+    });
+    expect(result.gemini_argon_weekly.resetAt).toBe("2026-09-10T08:17:00.000Z");
+  });
+
   it("handles alternate nested quotaSummary.groups shape", () => {
     const result = parseWeeklyQuotaSummary(NESTED_RESPONSE);
     expect(result.gemini_weekly).toBeDefined();
     expect(result.claude_gpt_weekly).toBeDefined();
+    expect(result.gemini_argon_weekly).toBeDefined();
     expect(result.gemini_weekly.remainingPercentage).toBe(75);
     expect(result.claude_gpt_weekly.remainingPercentage).toBe(50);
+    expect(result.gemini_argon_weekly.remainingPercentage).toBe(43);
   });
 
   it("skips unrecognized non-weekly non-session buckets", () => {
@@ -517,14 +544,24 @@ const PRO_PLAN_RESPONSE = {
 };
 
 describe("parseWeeklyQuotaSummary — model groups", () => {
-  it("keeps a single-model group separate from the Gemini family", () => {
+  it("keeps Gemini 4 Argon separate from the Gemini family", () => {
     const result = parseWeeklyQuotaSummary(PRO_PLAN_RESPONSE);
     expect(result.gemini_weekly.remainingPercentage).toBe(100);
-    expect(result["group:gemini-4-argon:weekly"]).toMatchObject({
+    expect(result.gemini_argon_weekly).toMatchObject({
       displayName: "Gemini 4 Argon (Weekly)",
       used: 958,
     });
-    expect(result["group:gemini-4-argon:weekly"].remainingPercentage).toBeCloseTo(4.16, 1);
+    expect(result.gemini_argon_weekly.remainingPercentage).toBeCloseTo(4.16, 1);
+    expect(result["group:gemini-4-argon:weekly"]).toBeUndefined();
+  });
+
+  it("keeps another single-model Gemini group as a generic group", () => {
+    const data = { groups: [{ displayName: "Gemini 4 Neon", buckets: [
+      { bucketId: "gemini-neon-weekly", window: "weekly", remainingFraction: 0.5, resetTime: "2026-11-04T09:06:47Z" },
+    ] }] };
+    const result = parseWeeklyQuotaSummary(data);
+    expect(result["group:gemini-4-neon:weekly"]).toMatchObject({ used: 500 });
+    expect(result.gemini_weekly).toBeUndefined();
   });
 
   it("keeps the real reading of a disabled 5h bucket", () => {
