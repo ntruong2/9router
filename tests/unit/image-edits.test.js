@@ -132,6 +132,14 @@ describe("parseImageEditRequest — JSON", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects URLs that point at internal hosts", async () => {
+    for (const url of ["http://127.0.0.1:20127/v1/models", "http://169.254.169.254/latest/meta-data", "http://localhost/a.png", "http://192.168.1.1/a.png"]) {
+      const res = await parseImageEditRequest(json({ model: "m", prompt: "p", image: url }));
+      expect(res.status).toBe(400);
+      expect(res.message).toContain("public host");
+    }
+  });
+
   it("rejects oversized bodies by Content-Length before reading", async () => {
     const req = json({ model: "m", prompt: "p", image: "https://x/a.png" }, { "Content-Length": String(200 * 1024 * 1024) });
     const res = await parseImageEditRequest(req);
@@ -190,5 +198,17 @@ describe("handleImageEdit", () => {
     const res = await handleImageEdit(json({ model: "codex/gpt-image-2.6", prompt: "p", image: "https://x/a.png", mask: "https://x/m.png" }));
     expect(res.status).toBe(400);
     expect(await res.text()).toContain("mask");
+  });
+});
+
+describe("inputUrlToBase64 (adapters that download input URLs)", () => {
+  it("refuses internal hosts without fetching", async () => {
+    const { inputUrlToBase64 } = await import("../../open-sse/handlers/imageProviders/_base.js");
+    const spy = vi.spyOn(globalThis, "fetch");
+    for (const url of ["http://127.0.0.1/a.png", "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/a.png"]) {
+      await expect(inputUrlToBase64(url)).rejects.toThrow(/rejected/);
+    }
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

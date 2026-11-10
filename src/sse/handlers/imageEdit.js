@@ -5,6 +5,7 @@
 // edit mode, which rejects providers that cannot take an input image.
 import { handleImageGeneration } from "./imageGeneration.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
+import { assertPublicUrl } from "@/shared/utils/ssrfGuard.js";
 
 export const MAX_EDIT_IMAGES = 16;
 export const MAX_EDIT_FILE_BYTES = 50 * 1024 * 1024;
@@ -43,7 +44,13 @@ function refFromJson(input, field) {
   if (input?.file_id) return fail(HTTP_STATUS.BAD_REQUEST, `${field}: file_id is not supported, send image_url instead`);
   if (typeof ref !== "string" || !ref.trim()) return fail(HTTP_STATUS.BAD_REQUEST, `${field} must be an image URL or data URL`);
   const value = ref.trim();
-  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value) || /^https?:\/\//i.test(value)) return { value };
+  if (/^data:image\/[a-z0-9.+-]+;base64,/i.test(value)) return { value };
+  if (/^https?:\/\//i.test(value)) {
+    // Cheap literal-host check up front; adapters that download the URL themselves
+    // re-check with DNS resolution (inputUrlToBase64).
+    try { assertPublicUrl(value); } catch { return fail(HTTP_STATUS.BAD_REQUEST, `${field} URL must point to a public host`); }
+    return { value };
+  }
   if (/^[A-Za-z0-9+/=\s]+$/.test(value) && value.length > 100) return { value: `data:image/png;base64,${value.replace(/\s+/g, "")}` };
   return fail(HTTP_STATUS.BAD_REQUEST, `${field} must be an image URL or data URL`);
 }

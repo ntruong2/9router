@@ -1,4 +1,5 @@
 // Shared helpers for image provider adapters
+import { fetchImageAsBase64 } from "../../translator/concerns/image.js";
 
 export const POLL_INTERVAL_MS = 1500;
 export const POLL_TIMEOUT_MS = 120000;
@@ -24,6 +25,16 @@ export async function urlToBase64(url) {
   if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
   const buf = await res.arrayBuffer();
   return Buffer.from(buf).toString("base64");
+}
+
+// Fetch a caller-supplied input image URL -> raw base64. Goes through the SSRF-hardened
+// fetcher (public IPs only with DNS pinned, no redirects, size cap, magic-byte check), so
+// an edit request can't make the server read internal hosts. urlToBase64 above is only
+// for result URLs returned by the provider itself.
+export async function inputUrlToBase64(url) {
+  const fetched = await fetchImageAsBase64(url);
+  if (!fetched) throw new Error("Input image URL was rejected: it must be a public http(s) URL that returns an image of at most 10MB");
+  return fetched.url.slice(fetched.url.indexOf(",") + 1);
 }
 
 export function nowSec() {

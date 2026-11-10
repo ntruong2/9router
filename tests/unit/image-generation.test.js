@@ -10,6 +10,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Input-image URLs go through the SSRF-hardened fetcher, which resolves DNS first.
+// Resolve every host to a public documentation IP so tests stay offline.
+vi.mock("node:dns/promises", () => ({
+  lookup: vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]),
+}));
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import { CODEX_CLI_VERSION } from "../../open-sse/config/appConstants.js";
 
@@ -554,9 +560,12 @@ describe("handleImageGenerationCore", () => {
   });
 
   it("resolves Cloudflare img2img and inpainting URL inputs before sending", async () => {
+    const PNG_SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    const PNG_SRC = [...PNG_SIG, 1, 2, 3];
+    const PNG_MASK = [...PNG_SIG, 4, 5, 6];
     global.fetch
-      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "Content-Type": "image/png" } }))
-      .mockResolvedValueOnce(new Response(new Uint8Array([4, 5, 6]), { status: 200, headers: { "Content-Type": "image/png" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(PNG_SRC), { status: 200, headers: { "Content-Type": "image/png" } }))
+      .mockResolvedValueOnce(new Response(new Uint8Array(PNG_MASK), { status: 200, headers: { "Content-Type": "image/png" } }))
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ result: { image: "base64inpaint" }, success: true }),
@@ -580,17 +589,18 @@ describe("handleImageGenerationCore", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png");
-    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png");
+    // Fetched without following redirects (SSRF guard).
+    expect(global.fetch).toHaveBeenNthCalledWith(1, "https://example.com/source.png", expect.objectContaining({ redirect: "manual" }));
+    expect(global.fetch).toHaveBeenNthCalledWith(2, "https://example.com/mask.png", expect.objectContaining({ redirect: "manual" }));
 
     const providerCall = global.fetch.mock.calls[2];
     expect(providerCall[0]).toBe("https://api.cloudflare.com/client/v4/accounts/cf-account/ai/run/@cf/runwayml/stable-diffusion-v1-5-inpainting");
     const requestBody = JSON.parse(providerCall[1].body);
-    expect(requestBody.image).toEqual([1, 2, 3]);
-    expect(requestBody.image_b64).toBe(Buffer.from([1, 2, 3]).toString("base64"));
-    expect(requestBody.mask).toEqual([4, 5, 6]);
-    expect(requestBody.mask_image).toEqual([4, 5, 6]);
-    expect(requestBody.mask_b64).toBe(Buffer.from([4, 5, 6]).toString("base64"));
+    expect(requestBody.image).toEqual(PNG_SRC);
+    expect(requestBody.image_b64).toBe(Buffer.from(PNG_SRC).toString("base64"));
+    expect(requestBody.mask).toEqual(PNG_MASK);
+    expect(requestBody.mask_image).toEqual(PNG_MASK);
+    expect(requestBody.mask_b64).toBe(Buffer.from(PNG_MASK).toString("base64"));
   });
 
   it("handles provider error responses", async () => {
