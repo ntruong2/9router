@@ -1,16 +1,20 @@
 // Antigravity image adapter - delegates to the executor for correct request
 // envelope (project, model, requestType, sessionId) and auth headers.
-import { nowSec, sizeToAspectRatio } from "./_base.js";
+import { nowSec, sizeToAspectRatio, inlineInputImageUrl } from "./_base.js";
 import { getExecutor } from "../../executors/index.js";
 
 // Antigravity accepts up to 10 reference images per request
 const MAX_REFERENCE_IMAGES = 10;
 
 // Convert image input (data URI or raw base64) to Gemini inlineData part
-function resolveImageInput(input) {
+function imageRef(input) {
   if (input && typeof input === "object") {
-    input = input.image_url?.url || input.url || input.data || input.b64_json;
+    return (typeof input.image_url === "string" ? input.image_url : input.image_url?.url) || input.url || input.data || input.b64_json;
   }
+  return input;
+}
+
+function resolveImageInput(input) {
   if (!input || typeof input !== "string") return null;
   // data:image/png;base64,... format
   const dataUriMatch = input.match(/^data:(image\/[^;]+);base64,(.+)$/);
@@ -72,9 +76,11 @@ Negative prompt: ${body.negative_prompt}`
       : body.prompt;
 
     // Build parts: reference images first, then the text prompt
+    // URL references are downloaded here (SSRF-guarded): Gemini only takes inline bytes.
+    const refs = await Promise.all(collectImageInputs(body).map((input) => inlineInputImageUrl(imageRef(input))));
     const parts = [];
-    for (const imageInput of collectImageInputs(body)) {
-      const inlineData = resolveImageInput(imageInput);
+    for (const ref of refs) {
+      const inlineData = resolveImageInput(ref);
       if (inlineData) parts.push(inlineData);
     }
     parts.push({ text: prompt });

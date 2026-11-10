@@ -27,14 +27,30 @@ export async function urlToBase64(url) {
   return Buffer.from(buf).toString("base64");
 }
 
-// Fetch a caller-supplied input image URL -> raw base64. Goes through the SSRF-hardened
-// fetcher (public IPs only with DNS pinned, no redirects, size cap, magic-byte check), so
-// an edit request can't make the server read internal hosts. urlToBase64 above is only
+// Caller-supplied input image URLs are downloaded through the SSRF-hardened fetcher
+// (public IPs only with DNS pinned, no redirects, size cap, magic-byte check), so an
+// edit request can't make the server read internal hosts. urlToBase64 above is only
 // for result URLs returned by the provider itself.
+const isHttpUrl = (value) => typeof value === "string" && /^https?:\/\//i.test(value.trim());
+
+function inputUrlRejected() {
+  const err = new Error("Input image URL was rejected: it must be a public http(s) URL that returns an image of at most 10MB");
+  err.status = 400; // request-scoped: must not put the account on cooldown
+  return err;
+}
+
+// http(s) URL -> data URI; any other value is returned unchanged.
+export async function inlineInputImageUrl(value) {
+  if (!isHttpUrl(value)) return value;
+  const fetched = await fetchImageAsBase64(value.trim());
+  if (!fetched) throw inputUrlRejected();
+  return fetched.url;
+}
+
+// http(s) URL -> raw base64 (no data: prefix).
 export async function inputUrlToBase64(url) {
-  const fetched = await fetchImageAsBase64(url);
-  if (!fetched) throw new Error("Input image URL was rejected: it must be a public http(s) URL that returns an image of at most 10MB");
-  return fetched.url.slice(fetched.url.indexOf(",") + 1);
+  const dataUri = await inlineInputImageUrl(url);
+  return dataUri.slice(dataUri.indexOf(",") + 1);
 }
 
 export function nowSec() {

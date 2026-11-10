@@ -59,7 +59,7 @@ console.log(data[0].url || data[0].b64_json.slice(0, 40));
 `POST $NINEROUTER_URL/v1/images/edits` is OpenAI-compatible, so `client.images.edit()` from the OpenAI SDKs works as is. It takes the same fields as generations plus the input image(s):
 
 - multipart: `image` or `image[]` files (PNG/JPEG/WEBP/GIF, max 16, 50MB each), optional `mask`
-- JSON: `images: [{ "image_url": "https://... or data:image/png;base64,..." }]` (plain strings also work)
+- JSON: `images: [{ "image_url": "https://... or data:image/png;base64,..." }]` (plain strings also work). URLs must be public: internal/LAN hosts are rejected with 400. For providers that need inline bytes (gemini, antigravity, huggingface, cloudflare-ai), 9router downloads the URL itself (max 10MB, must be an image).
 
 Only providers that use input images accept edits: `codex`, `nanobanana`, `antigravity` (several images), `gemini`, `huggingface`, `black-forest-labs`, `fal-ai`, `cloudflare-ai`, `runwayml` (one image). Others return 400 instead of silently ignoring the image. `mask` works only with `cloudflare-ai`; elsewhere describe the area to change in the prompt.
 

@@ -1,5 +1,5 @@
 // Google Gemini adapter (Nano Banana models)
-import { nowSec } from "./_base.js";
+import { nowSec, inlineInputImageUrl } from "./_base.js";
 import { PROVIDER_MEDIA } from "../../providers/index.js";
 
 const BASE_URL = PROVIDER_MEDIA["gemini"]?.imageConfig?.baseUrl;
@@ -23,9 +23,10 @@ export default {
     return `${BASE_URL}/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`;
   },
   buildHeaders: () => ({ "Content-Type": "application/json" }),
-  buildBody: (_model, body) => {
+  buildBody: async (_model, body) => {
     const parts = [{ text: body.prompt }];
-    const imageInput = body.image || (Array.isArray(body.images) && body.images[0]);
+    // A URL reference is downloaded here (SSRF-guarded): Gemini only takes inline bytes.
+    const imageInput = await inlineInputImageUrl(body.image || (Array.isArray(body.images) && body.images[0]));
     if (imageInput) {
       const inlineData = resolveImageInput(imageInput);
       if (inlineData) parts.unshift(inlineData);
