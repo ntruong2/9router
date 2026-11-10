@@ -9,7 +9,7 @@ import { getSettings } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
-import { getImageAdapter } from "open-sse/handlers/imageProviders/index.js";
+import { getImageAdapter, getImageInputSupport, supportsImageMask } from "open-sse/handlers/imageProviders/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -40,23 +40,27 @@ function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoi
   }).catch(() => {});
 }
 
+async function readJsonBody(request) {
+  try {
+    return { body: await request.json() };
+  } catch {
+    return { status: HTTP_STATUS.BAD_REQUEST, message: "Invalid JSON body" };
+  }
+}
+
 /**
  * Handle image generation request
  * @param {Request} request
+ * @param {object} [options]
+ * @param {(request: Request) => Promise<{body?: object, status?: number, message?: string}>} [options.readBody]
+ *   Body reader; runs after the API key check so unauthenticated uploads are never parsed.
+ * @param {boolean} [options.edit] - /v1/images/edits: body.images holds the input images
  */
-export async function handleImageGeneration(request) {
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid JSON body");
-  }
-
+export async function handleImageGeneration(request, { readBody = readJsonBody, edit = false } = {}) {
   const url = new URL(request.url);
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes("text/event-stream");
   const binaryOutput = url.searchParams.get("response_format") === "binary";
-  const modelStr = body.model;
 
   const apiKey = extractApiKey(request);
   const settings = await getSettings();
@@ -65,6 +69,11 @@ export async function handleImageGeneration(request) {
     const valid = await isValidApiKey(apiKey);
     if (!valid) return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
   }
+
+  const parsed = await readBody(request);
+  if (!parsed?.body) return errorResponse(parsed?.status || HTTP_STATUS.BAD_REQUEST, parsed?.message || "Invalid request body");
+  const body = parsed.body;
+  const modelStr = body.model;
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
@@ -88,14 +97,14 @@ export async function handleImageGeneration(request) {
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
+        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit }),
         log,
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
       });
     }
-    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
+    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit });
   };
 
   if (wantsStream && !binaryOutput) return sseFromResponse(run());
@@ -148,11 +157,29 @@ function sseFromResponse(responsePromise) {
   });
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint } = {}) {
+// Map normalized edit input (body.images, body.mask) onto the fields the provider's
+// adapter reads. Providers that would silently ignore the input image are rejected.
+function buildEditBody(body, provider, model) {
+  const support = getImageInputSupport(provider);
+  const label = `${provider}/${model}`;
+  if (!support) return { error: `Model ${label} does not support image edits` };
+  const { images = [], ...rest } = body;
+  if (support === "single" && images.length > 1) return { error: `Model ${label} accepts only one input image` };
+  if (rest.mask && !supportsImageMask(provider)) return { error: `Model ${label} does not support mask` };
+  return { body: images.length === 1 ? { ...rest, image: images[0] } : { ...rest, images } };
+}
+
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+
+  if (edit) {
+    const prepared = buildEditBody(body, provider, model);
+    if (prepared.error) return errorResponse(HTTP_STATUS.BAD_REQUEST, prepared.error);
+    body = prepared.body;
+  }
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {

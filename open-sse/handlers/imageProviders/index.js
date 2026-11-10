@@ -47,6 +47,32 @@ const ADAPTERS = {
   "uc-web": ucWeb,
 };
 
+// How each adapter consumes input images for /v1/images/edits.
+//   "multi"  — reads body.images (array) and body.image
+//   "single" — reads only one image (body.image, or body.images[0])
+// Providers not listed ignore input images, so edits must be rejected for them.
+// Only cloudflare-ai forwards a mask.
+const IMAGE_INPUT = {
+  codex: "multi",
+  nanobanana: "multi",
+  antigravity: "multi",
+  gemini: "single",
+  huggingface: "single",
+  "black-forest-labs": "single",
+  "fal-ai": "single",
+  "cloudflare-ai": "single",
+  runwayml: "single",
+};
+const MASK_PROVIDERS = new Set(["cloudflare-ai"]);
+
+export function getImageInputSupport(provider) {
+  return IMAGE_INPUT[provider] || null;
+}
+
+export function supportsImageMask(provider) {
+  return MASK_PROVIDERS.has(provider);
+}
+
 export function getImageAdapter(provider) {
   return ADAPTERS[provider] || null;
 }
