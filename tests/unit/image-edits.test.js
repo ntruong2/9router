@@ -212,3 +212,65 @@ describe("inputUrlToBase64 (adapters that download input URLs)", () => {
     spy.mockRestore();
   });
 });
+
+describe("long-running edits (Cloudflare 120s idle cut)", () => {
+  const codexForm = (extra = []) => multipart([
+    ["model", "codex/gpt-image-2.6"], ["prompt", "p"], ["image[]", pngFile()], ...extra,
+  ]);
+
+  it("honors the OpenAI stream form field: SSE with image_edit.completed", async () => {
+    const res = await handleImageEdit(codexForm([["stream", "true"], ["partial_images", "1"]]));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    expect(res.headers.get("x-accel-buffering")).toBe("no");
+    const text = await res.text();
+    expect(text).toContain(": open");
+    expect(text).toContain("event: image_edit.completed");
+    expect(text).toContain('"b64_json":"AAA"');
+    // stream is a transport flag, never forwarded to the provider
+    expect(mocks.core.mock.calls[0][0].body.stream).toBeUndefined();
+    expect(mocks.core.mock.calls[0][0].body.partial_images).toBeUndefined();
+  });
+
+  it("reports upstream failures as an SSE error event", async () => {
+    mocks.core.mockResolvedValue({ success: false, status: 400, error: "bad prompt", response: new Response(JSON.stringify({ error: { message: "bad prompt" } }), { status: 400 }) });
+    const res = await handleImageEdit(codexForm([["stream", "true"]]));
+    const text = await res.text();
+    expect(text).toContain("event: error");
+    expect(text).toContain("bad prompt");
+  });
+
+  it("answers a fast non-stream edit normally (real status, no keepalive)", async () => {
+    const res = await handleImageEdit(codexForm());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-accel-buffering")).toBeNull();
+    expect((await res.json()).data[0].b64_json).toBe("AAA");
+  });
+
+  it("opens a slow non-stream edit early and pads with whitespace until the JSON is ready", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      let finish;
+      mocks.core.mockReturnValue(new Promise((r) => { finish = () => r({
+        success: true,
+        response: new Response(JSON.stringify({ created: 1, data: [{ b64_json: "SLOW" }] }), { headers: { "Content-Type": "application/json" } }),
+      }); }));
+      const pending = handleImageEdit(codexForm());
+      // The 90s timer starts once the upload is parsed and the provider call is in flight.
+      while (!mocks.core.mock.calls.length) await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(91000);
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-accel-buffering")).toBe("no");
+      await vi.advanceTimersByTimeAsync(30000);
+      finish();
+      await vi.advanceTimersByTimeAsync(10);
+      const text = await res.text();
+      expect(text.startsWith(" ")).toBe(true);
+      expect(JSON.parse(text).data[0].b64_json).toBe("SLOW");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

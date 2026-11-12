@@ -73,6 +73,9 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
   const parsed = await readBody(request);
   if (!parsed?.body) return errorResponse(parsed?.status || HTTP_STATUS.BAD_REQUEST, parsed?.message || "Invalid request body");
   const body = parsed.body;
+  // OpenAI-style streaming (edits only): `stream: true` in the form/JSON body, not the Accept header.
+  const openAiStream = edit && body.stream === true;
+  delete body.stream;
   const modelStr = body.model;
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -107,8 +110,98 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
     return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit });
   };
 
+  if (openAiStream && !binaryOutput) return openAiSseFromResponse(run(), "image_edit");
   if (wantsStream && !binaryOutput) return sseFromResponse(run());
+  // Edits routinely take 60-120s. Behind Cloudflare an idle origin is cut at 120s (HTTP 524), so a
+  // slow plain-JSON request is answered early and kept alive with whitespace until the body is ready.
+  if (edit && !binaryOutput) return jsonWithKeepalive(run(), JSON_KEEPALIVE_AFTER_MS);
   return run();
+}
+
+const JSON_KEEPALIVE_AFTER_MS = 90000;
+const JSON_KEEPALIVE_EVERY_MS = 15000;
+
+const NO_BUFFER_HEADERS = {
+  "Cache-Control": "no-cache, no-transform",
+  "X-Accel-Buffering": "no",
+  "Access-Control-Allow-Origin": "*",
+};
+
+// Return the response untouched when it is ready within afterMs. Otherwise commit to HTTP 200 and
+// stream spaces (valid leading JSON whitespace) until the real body is ready; from then on an
+// upstream failure can only be reported inside the JSON body ({"error":{...}}), not as a status.
+async function jsonWithKeepalive(responsePromise, afterMs) {
+  const SLOW = Symbol("slow");
+  let timer;
+  const first = await Promise.race([
+    responsePromise,
+    new Promise((resolve) => { timer = setTimeout(() => resolve(SLOW), afterMs); }),
+  ]);
+  clearTimeout(timer);
+  if (first !== SLOW) return first;
+
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const write = (text) => { if (!closed) { try { controller.enqueue(enc.encode(text)); } catch { closed = true; } } };
+      write(" ");
+      const keepalive = setInterval(() => write(" "), JSON_KEEPALIVE_EVERY_MS);
+      try {
+        const res = await responsePromise;
+        write(await res.text());
+      } catch (err) {
+        write(JSON.stringify({ error: { message: err?.message || "Image generation failed", type: "api_error" } }));
+      } finally {
+        clearInterval(keepalive);
+        closed = true;
+        try { controller.close(); } catch {}
+      }
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/json", ...NO_BUFFER_HEADERS } });
+}
+
+// OpenAI-compatible image streaming: SSE comment keepalives every 10s (SDKs ignore them), then
+// `<prefix>.completed` per image, or `error`. Used when the request body sets stream=true.
+function openAiSseFromResponse(responsePromise, prefix) {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const write = (text) => { if (!closed) { try { controller.enqueue(enc.encode(text)); } catch { closed = true; } } };
+      const event = (name, data) => write("event: " + name + "\ndata: " + JSON.stringify(data) + "\n\n");
+      write(": open\n\n");
+      const keepalive = setInterval(() => write(": keepalive\n\n"), 10000);
+      try {
+        const res = await responsePromise;
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch {}
+        if (res.ok && Array.isArray(json?.data)) {
+          for (const item of json.data) {
+            event(`${prefix}.completed`, {
+              type: `${prefix}.completed`,
+              created_at: json.created,
+              ...(item.b64_json ? { b64_json: item.b64_json } : {}),
+              ...(item.url ? { url: item.url } : {}),
+              ...(json.usage ? { usage: json.usage } : {}),
+            });
+          }
+        } else {
+          const message = json?.error?.message || json?.error || json?.message || text || `HTTP ${res.status}`;
+          event("error", { type: "error", error: { message: typeof message === "string" ? message : JSON.stringify(message), type: "api_error", code: res.status } });
+        }
+      } catch (err) {
+        event("error", { type: "error", error: { message: err?.message || "Image generation failed", type: "api_error", code: HTTP_STATUS.BAD_GATEWAY } });
+      } finally {
+        clearInterval(keepalive);
+        closed = true;
+        try { controller.close(); } catch {}
+      }
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Connection": "keep-alive", ...NO_BUFFER_HEADERS } });
 }
 
 // Wrap a (possibly slow) JSON Response promise as SSE: `progress` every 10s, then `done` with the

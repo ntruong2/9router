@@ -68,6 +68,10 @@ function pickFields(source, get) {
     if (!Number.isFinite(num)) return fail(HTTP_STATUS.BAD_REQUEST, `${key} must be a number`);
     body[key] = num;
   }
+  // OpenAI-style `stream` (multipart sends it as the string "true"). partial_images is accepted
+  // and ignored: the router streams keepalives and the final image only.
+  const stream = get(source, "stream");
+  if (stream === true || stream === "true" || stream === "1") body.stream = true;
   return { body };
 }
 
