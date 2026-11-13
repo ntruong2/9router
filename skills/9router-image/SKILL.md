@@ -63,6 +63,8 @@ console.log(data[0].url || data[0].b64_json.slice(0, 40));
 
 Only providers that use input images accept edits: `codex`, `nanobanana`, `antigravity` (several images), `gemini`, `huggingface`, `black-forest-labs`, `fal-ai`, `cloudflare-ai`, `runwayml` (one image). Others return 400 instead of silently ignoring the image. `mask` works only with `cloudflare-ai`; elsewhere describe the area to change in the prompt.
 
+With `codex`, an edit takes its aspect ratio from the **first** input image; `size` only sets the resolution (a square first image with `size=1536x1024` gives about 1254x1254). To get a 3:2 result, put an image with that ratio first (e.g. the composition guide at 1536x1024) and the style references after it, or pad the first image to the target ratio.
+
 Edits can take 1-2 minutes. Behind Cloudflare a request idle for 120s fails with HTTP 524, so for slow edits either send `stream=true` (OpenAI-style SSE: `: keepalive` comments, then an `image_edit.completed` event with `b64_json`, or an `error` event) or just wait: a plain request not finished after 90s is answered early with HTTP 200 and kept alive with whitespace, and a late failure then arrives as `{"error":{...}}` in the body instead of a status code. Set the client timeout to 600s.
 
 ```bash
