@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { normalizeCookieHeaderInput } from "../utils/webCookieAuth.js";
 import { BaseExecutor } from "./base.js";
 import { SSE_DONE, SSE_HEADERS_NO_BUFFER } from "../utils/sseConstants.js";
 import { isMissingBrowserExecutable, resolveSystemChromeExecutable } from "./browserExecutableCheck.js";
@@ -102,12 +103,14 @@ function errorResponse(status, error, extraHeaders = {}) {
 
 function resolveMuseCookie(credentials) {
   const direct = String(credentials?.apiKey ?? "").trim() || String(credentials?.cookie ?? "").trim();
-  if (direct) return direct;
   const providerSpecificData = credentials?.providerSpecificData;
-  if (providerSpecificData && typeof providerSpecificData === "object" && !Array.isArray(providerSpecificData)) {
-    return String(providerSpecificData.cookie ?? "").trim();
+  const fallback = providerSpecificData && typeof providerSpecificData === "object" && !Array.isArray(providerSpecificData)
+    ? String(providerSpecificData.cookie ?? "").trim() : "";
+  try {
+    return normalizeCookieHeaderInput(direct || fallback);
+  } catch (error) {
+    throw new MuseWebAuthError(error.message);
   }
-  return "";
 }
 
 /** Map a flow error to the HTTP status the fallback layer should see. */
