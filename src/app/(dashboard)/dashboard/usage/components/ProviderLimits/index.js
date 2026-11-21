@@ -45,6 +45,9 @@ import AutoPingScheduleModal from "@/app/(dashboard)/dashboard/providers/[id]/Au
 import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
 import { USAGE_SUPPORTED_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
+import { appendQuotaHistory, buildQuotaSnapshot, SMART_QUOTA_FETCHED_AT_HEADER, forecastQuota, getQuotaAlertState, getConnectionQuotaHealth, getRecommendedConnection } from "@/shared/services/smartQuota.js";
+import { buildQuotaAlerts, dedupeQuotaAlerts } from "@/shared/services/smartQuotaAlerts.js";
+import { useNotificationStore } from "@/store/notificationStore";
 
 // Maps the stored providerSpecificData.authMethod to a human label for Kiro.
 // Values come from the Kiro connect flows: builder-id/idc (device code),
@@ -202,6 +205,14 @@ export default function ProviderLimits() {
   const [accountFilter, setAccountFilter] = useState("all");
   const [quotaSortMode, setQuotaSortMode] = useState("default");
   const [quotaVisibility, setQuotaVisibility] = useState({});
+  const [smartQuotaUse, setSmartQuotaUse] = useState(true);
+  const [smartQuotaForecast, setSmartQuotaForecast] = useState(true);
+  const [smartQuotaAlerts, setSmartQuotaAlerts] = useState(true);
+  const [smartQuotaBackgroundRefresh, setSmartQuotaBackgroundRefresh] = useState(false);
+  const [codexSessionPin, setCodexSessionPin] = useState(true);
+  const [sessionMaxConcurrent, setSessionMaxConcurrent] = useState({});
+  const [sessionLoadStatus, setSessionLoadStatus] = useState({});
+  const addNotification = useNotificationStore((state) => state.addNotification);
   const [expiringFirst, setExpiringFirst] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [bulkToggling, setBulkToggling] = useState(false);
@@ -264,18 +275,17 @@ export default function ProviderLimits() {
         return [];
       }
     },
-    [accountFilter, expiringFirst, page, pageSize, providerFilter],
+    [accountFilter, page, pageSize, providerFilter],
   );
 
   // Fetch quota for a specific connection
-  const fetchQuota = useCallback(async (connectionId, provider, { force = false } = {}) => {
-    setLoading((prev) => ({ ...prev, [connectionId]: true }));
-    setErrors((prev) => ({ ...prev, [connectionId]: null }));
+  const fetchQuota = useCallback(async (connectionId, provider, { force = false, silent = false } = {}) => {
+    if (!silent) {
+      setLoading((prev) => ({ ...prev, [connectionId]: true }));
+      setErrors((prev) => ({ ...prev, [connectionId]: null }));
+    }
 
     try {
-      console.log(
-        `[ProviderLimits] Fetching quota for ${provider} (${connectionId})`,
-      );
       const url = `/api/usage/${connectionId}${force ? "?force=1" : ""}`;
       const response = await fetch(url);
 
@@ -301,6 +311,7 @@ export default function ProviderLimits() {
           const quotaEntry = {
             quotas: [],
             message: errorMsg,
+            authError: true,
           };
           setQuotaData((prev) => ({
             ...prev,
@@ -314,7 +325,6 @@ export default function ProviderLimits() {
       }
 
       const data = await response.json();
-      console.log(`[ProviderLimits] Got quota for ${provider}:`, data);
 
       // Parse quota data using provider-specific parser
       const parsedQuotas = parseQuotaData(provider, data);
@@ -324,6 +334,7 @@ export default function ProviderLimits() {
         plan: data.plan || null,
         message: data.message || null,
         raw: data,
+        fetchedAt: response.headers.get(SMART_QUOTA_FETCHED_AT_HEADER),
       };
 
       setQuotaData((prev) => ({
@@ -336,13 +347,29 @@ export default function ProviderLimits() {
         `[ProviderLimits] Error fetching quota for ${provider} (${connectionId}):`,
         error,
       );
-      setErrors((prev) => ({
-        ...prev,
-        [connectionId]: error.message || "Failed to fetch quota",
-      }));
+      setErrors((prev) => ({ ...prev, [connectionId]: error.message || "Failed to fetch quota" }));
     } finally {
-      setLoading((prev) => ({ ...prev, [connectionId]: false }));
+      if (!silent) setLoading((prev) => ({ ...prev, [connectionId]: false }));
     }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer;
+    const load = async () => {
+      try {
+        const response = await fetch("/api/usage/session-load", { cache: "no-store", signal: controller.signal });
+        if (!response.ok) throw new Error("Failed to fetch session load");
+        const data = await response.json();
+        if (!controller.signal.aborted) setSessionLoadStatus(Object.fromEntries(data.accounts.map((entry) => [entry.connectionId, entry])));
+      } catch {
+        if (!controller.signal.aborted) setSessionLoadStatus({});
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(load, 5000);
+      }
+    };
+    load();
+    return () => { controller.abort(); clearTimeout(timer); };
   }, []);
 
   // Refresh quota for a specific provider
@@ -541,7 +568,7 @@ export default function ProviderLimits() {
     try {
       const visibleConnections = await fetchConnections(page);
 
-      setLoading(buildLoadingState(visibleConnections));
+      setLoading(buildLoadingState(visibleConnections.filter(shouldFetch)));
       setErrors((prev) =>
         filterQuotaStateByConnections(prev, visibleConnections),
       );
@@ -549,11 +576,12 @@ export default function ProviderLimits() {
         filterQuotaStateByConnections(prev, visibleConnections),
       );
 
-      await Promise.all(
-        visibleConnections
-          .filter(shouldFetch)
-          .map((conn) => fetchQuota(conn.id, conn.provider)),
-      );
+      const targets = visibleConnections.filter(shouldFetch);
+      setLoading(buildLoadingState(targets));
+      await Promise.all(targets.map((conn) => fetchQuota(conn.id, conn.provider, { force, silent: true })));
+      setLoading((prev) => Object.fromEntries(
+        Object.entries(filterQuotaStateByConnections(prev, visibleConnections)).map(([id]) => [id, false]),
+      ));
 
       setLastUpdated(new Date());
     } catch (error) {
@@ -579,7 +607,7 @@ export default function ProviderLimits() {
       );
 
       await Promise.all(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider)),
+        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider, { silent: true })),
       );
       setLastUpdated(new Date());
     };
@@ -610,6 +638,12 @@ export default function ProviderLimits() {
           codex: s?.codexAutoPing || {},
         });
         setQuotaVisibility(s?.quotaVisibility || {});
+        setSmartQuotaUse(s?.smartQuotaUse !== false);
+        setSmartQuotaForecast(s?.smartQuotaForecast !== false);
+        setSmartQuotaAlerts(s?.smartQuotaAlerts !== false);
+        setSmartQuotaBackgroundRefresh(s?.smartQuotaBackgroundRefresh === true);
+        setCodexSessionPin(s?.sessionPin?.codex === true || (s?.sessionPin === undefined && s?.codexSessionPin === true));
+        setSessionMaxConcurrent(s?.sessionMaxConcurrent || {});
       })
       .catch(() => {});
   }, []);
@@ -660,6 +694,71 @@ export default function ProviderLimits() {
       setQuotaVisibility(previousVisibility);
     }
   }, []);
+
+  const toggleSmartQuotaUse = useCallback(async () => {
+    const nextValue = !smartQuotaUse;
+    setSmartQuotaUse(nextValue);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ smartQuotaUse: nextValue }),
+      });
+      if (!response.ok) throw new Error("Failed to update Smart Use");
+    } catch (error) {
+      console.error("Error updating Smart Use:", error);
+      setSmartQuotaUse(!nextValue);
+    }
+  }, [smartQuotaUse]);
+
+  const toggleSmartQuotaSetting = useCallback(async (key, value, setter) => {
+    const nextValue = !value;
+    setter(nextValue);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [key]: nextValue }),
+      });
+      if (!response.ok) throw new Error(`Failed to update ${key}`);
+    } catch (error) {
+      console.error(`Error updating ${key}:`, error);
+      setter(value);
+    }
+  }, []);
+
+  const toggleCodexSessionPin = useCallback(async () => {
+    const next = !codexSessionPin;
+    setCodexSessionPin(next);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionPin: { codex: next } }),
+      });
+      if (!response.ok) throw new Error("Failed to update Codex SessionPin");
+    } catch (error) {
+      console.error("Error updating Codex SessionPin:", error);
+      setCodexSessionPin(!next);
+    }
+  }, [codexSessionPin]);
+
+  const updateSessionMaxConcurrent = useCallback(async (provider, value) => {
+    const next = Math.max(1, Math.min(32, Number.parseInt(value, 10) || 2));
+    const previous = sessionMaxConcurrent[provider] || 2;
+    setSessionMaxConcurrent((current) => ({ ...current, [provider]: next }));
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionMaxConcurrent: { [provider]: next } }),
+      });
+      if (!response.ok) throw new Error("Failed to update session capacity");
+    } catch (error) {
+      console.error("Error updating session capacity:", error);
+      setSessionMaxConcurrent((current) => ({ ...current, [provider]: previous }));
+    }
+  }, [sessionMaxConcurrent]);
 
   const handleHideQuota = useCallback((provider, quota) => {
     const key = getQuotaVisibilityKey(quota);
@@ -790,6 +889,98 @@ export default function ProviderLimits() {
       ),
     [connections, quotaData, expiringFirst, providerFilter, quotaSortMode],
   );
+
+  const quotaHealthByConnection = useMemo(() => {
+    const entries = new Map();
+    for (const connection of connections) {
+      const quota = quotaData[connection.id];
+      entries.set(connection.id, getConnectionQuotaHealth({
+        ...connection,
+        smartQuotaSnapshot: {
+          quotas: quota?.quotas || [],
+          fetchedAt: quota?.fetchedAt || quota?.cachedAt,
+        },
+      }));
+    }
+    return entries;
+  }, [connections, quotaData]);
+
+  const recommendedConnection = useMemo(() => {
+    if (!smartQuotaUse) return null;
+    const candidates = connections.map((connection) => ({
+      ...connection,
+      smartQuotaSnapshot: {
+        quotas: quotaData[connection.id]?.quotas || [],
+        fetchedAt: quotaData[connection.id]?.fetchedAt || quotaData[connection.id]?.cachedAt,
+      },
+    }));
+    return getRecommendedConnection(candidates);
+  }, [connections, quotaData, smartQuotaUse]);
+
+  const forecastByConnection = useMemo(() => {
+    if (!smartQuotaForecast) return new Map();
+    return new Map(connections.map((connection) => {
+      const current = quotaData[connection.id];
+      const currentSnapshot = current?.fetchedAt ? buildQuotaSnapshot(current.quotas, current.fetchedAt) : null;
+      return [connection.id, forecastQuota(
+        appendQuotaHistory(connection.smartQuotaHistory || [], currentSnapshot),
+        null,
+      )];
+    }));
+  }, [connections, quotaData, smartQuotaForecast]);
+
+  const quotaAlertStateRef = useRef(new Map());
+  const previousQuotaRef = useRef(new Map());
+  useEffect(() => {
+    const now = Date.now();
+    const previous = previousQuotaRef.current;
+    const next = new Map();
+    for (const connection of connections) {
+      if (connection.isActive === false) continue;
+      const current = quotaData[connection.id];
+      const last = previous.get(connection.id);
+      const snapshot = current?.fetchedAt
+        ? buildQuotaSnapshot(current.quotas, current.fetchedAt)
+        : connection.smartQuotaSnapshot;
+      const isNew = Date.parse(snapshot?.fetchedAt) > Date.parse(last?.snapshot?.fetchedAt);
+      const cooldown = Date.parse(connection.cooldownUntil) > now;
+      const credentialError = [401, 403].includes(Number(connection.errorCode)) ||
+        current?.authError === true;
+      next.set(connection.id, { snapshot: isNew || !last?.snapshot ? snapshot : last.snapshot, cooldown, credentialError });
+      if (!smartQuotaAlerts || !last) continue;
+      const forecast = forecastByConnection.get(connection.id);
+      const alerts = isNew ? buildQuotaAlerts(last.snapshot, snapshot, forecast, now) : [];
+      if (cooldown && !last.cooldown) alerts.push({ type: "cooldown", key: "account" });
+      if (!cooldown && last.cooldown) alerts.push({ type: "recovered", key: "account" });
+      if (credentialError && !last.credentialError) alerts.push({ type: "credential", key: "account" });
+      const label = getConnectionLabel(connection) || providerLabel(connection.provider);
+      for (const alert of dedupeQuotaAlerts(alerts, quotaAlertStateRef.current, now, connection.id)) {
+        const messages = {
+          reset: `Quota ${alert.key} reset`,
+          forecast: `Quota ${alert.key} may run out within two hours`,
+          depleted: `Quota ${alert.key} is depleted`,
+          low: `Quota ${alert.key} is at 10% or less`,
+          cooldown: "Account entered cooldown",
+          recovered: "Account cooldown ended",
+          credential: "Provider rejected the account credentials",
+        };
+        const success = alert.type === "reset" || alert.type === "recovered";
+        addNotification({ type: success ? "success" : "warning", title: "Smart Quota", message: `${label}: ${messages[alert.type]}` });
+      }
+    }
+    previousQuotaRef.current = next;
+  }, [addNotification, connections, forecastByConnection, quotaData, smartQuotaAlerts]);
+
+  const alertByConnection = useMemo(() => {
+    const alerts = new Map();
+    for (const connection of connections) {
+      const quota = quotaData[connection.id];
+      alerts.set(connection.id, getQuotaAlertState({
+        quotas: quota?.quotas || [],
+      }));
+    }
+    return alerts;
+  }, [connections, quotaData]);
 
   // Connection is depleted when any quota entry hit the threshold
   const isConnectionDepleted = (conn) => {
@@ -1027,6 +1218,22 @@ export default function ProviderLimits() {
             </select>
           )}
 
+          {providerFilter !== "all" && (
+            <label className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs dark:border-white/10" title="Maximum concurrent requests per account">
+              <span className="material-symbols-outlined text-[14px]">speed</span>
+              <span className="hidden sm:inline">Load</span>
+              <input
+                type="number"
+                min="1"
+                max="32"
+                value={sessionMaxConcurrent[providerFilter] || 2}
+                onChange={(event) => updateSessionMaxConcurrent(providerFilter, event.target.value)}
+                className="w-10 bg-transparent text-center text-xs outline-none"
+                aria-label={`${providerFilter} maximum concurrent requests per account`}
+              />
+            </label>
+          )}
+
           <button
             type="button"
             onClick={() => setExpiringFirst((prev) => !prev)}
@@ -1039,6 +1246,63 @@ export default function ProviderLimits() {
             </span>
             <span className="hidden sm:inline">Expiring first</span>
           </button>
+
+          <button
+            type="button"
+            onClick={toggleSmartQuotaUse}
+            aria-pressed={smartQuotaUse}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${smartQuotaUse ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "border-black/10 text-text-primary hover:bg-black/5 dark:border-white/10 dark:hover:bg-white/5"}`}
+            title="Prefer accounts with healthier fresh quota"
+          >
+            <span className="material-symbols-outlined text-[14px]">auto_awesome</span>
+            <span className="hidden sm:inline">Smart Use</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => toggleSmartQuotaSetting("smartQuotaForecast", smartQuotaForecast, setSmartQuotaForecast)}
+            aria-pressed={smartQuotaForecast}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${smartQuotaForecast ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300" : "border-black/10 text-text-primary dark:border-white/10"}`}
+            title="Estimate time until quota exhaustion"
+          >
+            <span className="material-symbols-outlined text-[14px]">query_stats</span>
+            <span className="hidden sm:inline">Forecast</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => toggleSmartQuotaSetting("smartQuotaAlerts", smartQuotaAlerts, setSmartQuotaAlerts)}
+            aria-pressed={smartQuotaAlerts}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${smartQuotaAlerts ? "border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-300" : "border-black/10 text-text-primary dark:border-white/10"}`}
+            title="Show quota forecast warnings"
+          >
+            <span className="material-symbols-outlined text-[14px]">notifications_active</span>
+            <span className="hidden sm:inline">Alerts</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => toggleSmartQuotaSetting("smartQuotaBackgroundRefresh", smartQuotaBackgroundRefresh, setSmartQuotaBackgroundRefresh)}
+            aria-pressed={smartQuotaBackgroundRefresh}
+            className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${smartQuotaBackgroundRefresh ? "border-violet-500/40 bg-violet-500/10 text-violet-700 dark:text-violet-300" : "border-black/10 text-text-primary dark:border-white/10"}`}
+            title="Refresh quota in the background while the dashboard is closed"
+          >
+            <span className="material-symbols-outlined text-[14px]">sync</span>
+            <span className="hidden sm:inline">Background</span>
+          </button>
+
+          {providerFilter === "codex" && (
+            <button
+              type="button"
+              onClick={toggleCodexSessionPin}
+              aria-pressed={codexSessionPin}
+              className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${codexSessionPin ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300" : "border-black/10 text-text-primary dark:border-white/10"}`}
+              title="Keep each Codex session on one account until failover"
+            >
+              <span className="material-symbols-outlined text-[14px]">push_pin</span>
+              <span className="hidden sm:inline">Pin Session</span>
+            </button>
+          )}
 
           {/* Bulk: disable depleted */}
           <button
@@ -1107,6 +1371,15 @@ export default function ProviderLimits() {
         </div>
       </div>
 
+      {recommendedConnection && (
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+          <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
+          <span>
+            Smart Use recommends <strong>{getConnectionLabel(recommendedConnection) || providerLabel(recommendedConnection.provider)}</strong> based on fresh quota and reset time.
+          </span>
+        </div>
+      )}
+
       {/* Provider cards: 2 columns, compact */}
       {expiringFirst && (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
@@ -1132,6 +1405,11 @@ export default function ProviderLimits() {
           const rawQuotas = quota?.quotas || [];
           const visibleQuotas = filterQuotasByVisibility(conn.provider, rawQuotas, quotaVisibility);
           const hiddenQuotaRows = getHiddenQuotaRows(conn.provider, rawQuotas, quotaVisibility);
+          const quotaHealth = quotaHealthByConnection.get(conn.id);
+          const isRecommended = recommendedConnection?.id === conn.id;
+          const forecast = forecastByConnection.get(conn.id);
+          const quotaAlert = alertByConnection.get(conn.id);
+          const sessionLoad = !isInactive && sessionLoadStatus[conn.id];
 
           return (
             <Card
@@ -1157,11 +1435,43 @@ export default function ProviderLimits() {
                       <h3 className="text-sm font-semibold text-text-primary truncate">
                         {providerLabel(conn.provider)}
                       </h3>
+                      {isRecommended && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                          <span className="material-symbols-outlined text-[11px]">auto_awesome</span>
+                          Recommended
+                        </span>
+                      )}
+                      {quotaHealth?.stale && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                          <span className="material-symbols-outlined text-[11px]">schedule</span>
+                          Data stale
+                        </span>
+                      )}
+                      {forecast && smartQuotaAlerts && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-orange-700 dark:text-orange-300">
+                          <span className="material-symbols-outlined text-[11px]">trending_down</span>
+                          ~{Math.max(1, Math.round(forecast.hoursUntilEmpty))}h left
+                        </span>
+                      )}
+                      {quotaAlert?.resetSoon && smartQuotaAlerts && (
+                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 dark:text-blue-300">
+                          <span className="material-symbols-outlined text-[11px]">event_upcoming</span>
+                          Reset soon
+                        </span>
+                      )}
                       {getConnectionLabel(conn) ? (
                         <p className="text-xs text-text-muted truncate">
                           {getConnectionLabel(conn)}
                         </p>
                       ) : null}
+                      {sessionLoad && (
+                        <p className={`text-[11px] ${sessionLoad.overloaded ? "font-semibold text-amber-700 dark:text-amber-300" : "text-text-muted"}`}>
+                          {sessionLoad.activeRequests}/{sessionLoad.maxConcurrent} requests active
+                          {sessionLoad.overloaded && " · At capacity"}
+                          {sessionLoad.ewmaLatencyMs > 0 && ` · ${Math.round(sessionLoad.ewmaLatencyMs)}ms avg`}
+                          {sessionLoad.recentErrors > 0 && ` · ${sessionLoad.recentErrors} recent error${sessionLoad.recentErrors === 1 ? "" : "s"}`}
+                        </p>
+                      )}
                       {getConnectionSecondaryLabel(conn) ? (
                         <p className="text-[11px] text-text-muted/80 truncate">
                           {getConnectionSecondaryLabel(conn)}

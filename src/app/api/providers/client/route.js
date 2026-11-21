@@ -3,6 +3,7 @@ import { getProviderConnections } from "@/lib/localDb";
 import { backfillCodexEmails } from "@/lib/oauth/providers";
 import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
+import { getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
 
 const SAFE_FIELDS = [
   "id", "provider", "authType", "name", "email", "displayName",
@@ -10,6 +11,7 @@ const SAFE_FIELDS = [
   "testStatus", "lastError", "lastErrorAt", "errorCode",
   "expiresAt", "lastUsedAt", "consecutiveUseCount",
   "createdAt", "updatedAt",
+  "smartQuotaSnapshot", "smartQuotaHistory",
 ];
 
 const SAFE_PSD_FIELDS = [
@@ -34,6 +36,7 @@ function sanitize(c) {
   const safe = {};
   for (const f of SAFE_FIELDS) if (c[f] !== undefined) safe[f] = c[f];
   if (safe.name) safe.name = maskName(safe.name);
+  safe.cooldownUntil = getEarliestModelLockUntil(c) || c.rateLimitedUntil || null;
   if (c.providerSpecificData) {
     const psd = {};
     for (const f of SAFE_PSD_FIELDS) {

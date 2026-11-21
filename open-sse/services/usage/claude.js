@@ -44,11 +44,12 @@ export async function getClaudeUsage(accessToken, proxyOptions = null, options =
     const result = await fetchClaudeUsageRaw(accessToken, proxyOptions);
     // Only cache real quota data, not soft-failure {message: ...} payloads
     if (accessToken && result?.quotas) {
+      const measured = { ...result, quotaFetchedAt: new Date().toISOString() };
       usageCache.set(accessToken, {
-        result,
+        result: measured,
         expiresAt: Date.now() + USAGE_CACHE_TTL_MS,
       });
-      return result;
+      return measured;
     }
     // Soft failure (429/error): prefer the last good read over a transient error
     if (stale) return stale;

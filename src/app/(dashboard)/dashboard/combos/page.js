@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -73,6 +74,7 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  const [paidFallback, setPaidFallback] = useState({ enabled: false, providers: [], combos: [] });
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
@@ -198,6 +200,7 @@ export default function CombosPage() {
         setActiveProviders((providersData.connections || []).filter((c) => c.isActive !== false));
       }
       setComboStrategies(settingsData.comboStrategies || {});
+      setPaidFallback({ enabled: false, providers: [], combos: [], ...(settingsData.paidFallback || {}) });
       const rawAdapter = settingsData.capacityAdapter || {};
       const normalized = {};
       for (const cap of CAPACITY_ADAPTER_CAPS) {
@@ -221,6 +224,23 @@ export default function CombosPage() {
       });
     } catch (error) {
       console.log("Error updating capacity adapter:", error);
+    }
+  };
+
+  const handlePaidFallbackToggle = async (enabled) => {
+    const previous = paidFallback;
+    const next = { ...paidFallback, enabled };
+    setPaidFallback(next);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paidFallback: next }),
+      });
+      if (!response.ok) throw new Error("Failed to update paid fallback policy");
+    } catch (error) {
+      setPaidFallback(previous);
+      alert(error.message);
     }
   };
 
@@ -460,6 +480,16 @@ export default function CombosPage() {
           </div>
         </div>
       </div>
+
+      <Card padding="sm" className="border-amber-500/20 bg-amber-500/[0.04]">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-text-main">Paid fallback protection</p>
+            <p className="text-xs text-text-muted">When enabled, Smart Use will not enter paid fallback routes unless explicitly allowed in settings.</p>
+          </div>
+          <Toggle checked={paidFallback.enabled} onChange={handlePaidFallbackToggle} size="sm" label={paidFallback.enabled ? "Protected" : "Allow paid fallback"} />
+        </div>
+      </Card>
 
       {/* Combos List */}
       {combos.length === 0 ? (

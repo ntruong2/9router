@@ -1,7 +1,9 @@
 import "open-sse/index.js";
+import { createHash } from "node:crypto";
 
 import {
   getProviderCredentials,
+  clearProviderSessionPin,
   markAccountUnavailable,
   clearAccountError,
   extractApiKey,
@@ -28,6 +30,13 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
+import { releaseAfterEventStream, SESSION_QUEUE_TIMEOUT_MS } from "@/shared/services/sessionLoad.js";
+
+export function scopeSessionId(sessionId, apiKey) {
+  if (!sessionId || !apiKey) return sessionId || null;
+  const scope = createHash("sha256").update(String(apiKey)).digest("hex").slice(0, 16);
+  return `api:${scope}:${sessionId}`;
+}
 
 /**
  * Handle chat completion request
@@ -59,13 +68,14 @@ export async function handleChat(request, clientRawRequest = null) {
   if (contextMarker) body.model = modelStr;
 
   const session = resolveSessionIdentity({ headers: clientRawRequest?.headers, body });
-  const sessionId = session?.sessionId || null;
+  const rawSessionId = session?.sessionId || null;
 
   // Request summary is emitted as the unified "▶" line in chatCore (has fmt/thinking/account)
 
   // Log API key (masked)
   const authHeader = request.headers.get("Authorization");
   const apiKey = extractApiKey(request);
+  const sessionId = scopeSessionId(rawSessionId, apiKey);
   if (authHeader && apiKey) {
     const masked = log.maskKey(apiKey);
     log.debug("AUTH", `API Key: ${masked}`);
@@ -127,7 +137,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, { comboName: modelStr, isFallback: true });
         },
         log,
         comboName: modelStr,
@@ -142,8 +152,10 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: augmentedModels,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      onAttempt: withCapacityAdapterStripping(
+        (b, m, fallback) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, {
+          comboName: modelStr, isFallback: fallback || m !== comboModels[0],
+        }),
         adapterAdded
       ),
       log,
@@ -159,6 +171,7 @@ export async function handleChat(request, clientRawRequest = null) {
             body: b,
             models: m,
             routerModel: comboCfg.routerModel,
+            paidFallback: { comboName: modelStr, isFallback: true },
             log,
           })
         : null,
@@ -174,8 +187,8 @@ export async function handleChat(request, clientRawRequest = null) {
     return handleComboChat({
       body,
       models: soloAugmented,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+      onAttempt: withCapacityAdapterStripping(
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, { isFallback: m !== modelStr }),
         adapterAdded
       ),
       log,
@@ -190,8 +203,10 @@ export async function handleChat(request, clientRawRequest = null) {
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, requestedModel = null, routing = {}) {
   const modelInfo = await getModelInfo(modelStr);
+  const session = resolveSessionIdentity({ headers: clientRawRequest?.headers, body });
+  const sessionId = scopeSessionId(session?.sessionId || null, apiKey);
 
   // If provider is null, this might be a combo name - check and handle
   if (!modelInfo.provider) {
@@ -220,7 +235,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, null, { comboName: routing.comboName || modelStr, isFallback: true });
           },
           log,
           comboName: modelStr,
@@ -237,8 +252,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       return handleComboChat({
         body,
         models: augmentedModels,
-        handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        onAttempt: withCapacityAdapterStripping(
+          (b, m, fallback) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, null, {
+            comboName: routing.comboName || modelStr,
+            isFallback: routing.isFallback || fallback || m !== comboModels[0],
+          }),
           adapterAdded
         ),
         log,
@@ -254,6 +272,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               body: b,
               models: m,
               routerModel: comboCfg.routerModel,
+              paidFallback: { comboName: routing.comboName || modelStr, isFallback: true },
               log,
             })
           : null,
@@ -275,11 +294,33 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastError = null;
   let lastStatus = null;
   let lastHeaders = null;
+  let capacityDeadline;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      requestedModel: requestedModel || model,
+      paidFallback: { comboName: routing.comboName, isFallback: routing.isFallback === true || excludeConnectionIds.size > 0 },
+      sessionId,
+      reserveChatSlot: true,
+    });
+    if (credentials?.paidFallbackBlocked) {
+      const { provider, model, message } = credentials.paidFallbackBlocked;
+      log.warn("FALLBACK", `Paid fallback blocked for ${provider}/${model}`);
+      return Response.json({
+        error: { message, provider, model, code: "paid_fallback_blocked" },
+        retryAfter: credentials.retryAfter,
+      }, { status: 402 });
+    }
 
     // All accounts unavailable
+    if (credentials?.waitForChatSlot) {
+      const now = performance.now();
+      capacityDeadline ??= now + SESSION_QUEUE_TIMEOUT_MS;
+      const remaining = capacityDeadline - now;
+      if (remaining > 0 && await credentials.waitForChatSlot(remaining, request?.signal)) continue;
+      const retryAt = new Date(Date.now() + SESSION_QUEUE_TIMEOUT_MS).toISOString();
+      return unavailableResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `[${provider}/${model}] account capacity is full`, retryAt, `retry after ${SESSION_QUEUE_TIMEOUT_MS / 1000}s`);
+    }
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
@@ -296,11 +337,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Account selection shown in the unified "▶" line (acc:...)
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    let refreshedCredentials;
+    try {
+      refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    } catch (error) {
+      credentials.releaseChatSlot?.({ error: true });
+      throw error;
+    }
 
     // Ensure real project ID is available for providers that need it (P0 fix: cold miss)
     if ((provider === "antigravity" || provider === "gemini-cli") && !refreshedCredentials.projectId) {
-      const pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken, provider);
+      let pid;
+      try {
+        pid = await getProjectIdForConnection(credentials.connectionId, refreshedCredentials.accessToken, provider);
+      } catch (error) {
+        credentials.releaseChatSlot?.({ error: true });
+        throw error;
+      }
       if (pid) {
         refreshedCredentials.projectId = pid;
         // Persist to DB in background so subsequent requests have it immediately
@@ -309,8 +362,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     }
 
     // Use shared chatCore
-    const chatSettings = await getSettings();
+    let chatSettings;
+    try {
+      chatSettings = await getSettings();
+    } catch (error) {
+      credentials.releaseChatSlot?.({ error: true });
+      throw error;
+    }
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+    let pxpipeTransform = null;
+    if (chatSettings.pxpipeEnabled) {
+      try {
+        pxpipeTransform = await getPxpipeTransform();
+      } catch (error) {
+        credentials.releaseChatSlot?.({ error: true });
+        throw error;
+      }
+    }
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -336,7 +404,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeMinChars: chatSettings.pxpipeMinChars,
       pxpipeTimeoutMs: chatSettings.pxpipeTimeoutMs,
       // Lazily warms the in-process module on first use; null when not installed (fail-open)
-      pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
+      pxpipeTransform,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
       // Per-provider user overrides (custom headers / connect timeout) from settings
@@ -355,9 +423,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         // "Consecutive" strikes: a success clears the breaker for this pair.
         clearAntigravityStrikes(credentials.connectionId, model);
       }
+    }).catch((error) => {
+        credentials.releaseChatSlot?.({ error: true });
+      throw error;
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      const contentType = result.response?.headers?.get("content-type") || "";
+      if (contentType.includes("text/event-stream")) {
+        return releaseAfterEventStream(result.response, credentials.releaseChatSlot, request?.signal);
+      }
+      credentials.releaseChatSlot?.();
+      return result.response;
+    }
+    credentials.releaseChatSlot?.({ error: true });
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
@@ -374,9 +453,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     // Do not persist a modelLock_* for this path.
     const shouldFallback = provider === "antigravity" && quotaResetMs
       ? true
-      : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
+      : (await markAccountUnavailable(
+        credentials.connectionId, result.status, result.error, provider, model,
+        resetsAtMs, result.response?.headers.get("Retry-After"),
+      )).shouldFallback;
 
     if (shouldFallback) {
+      if (provider === "codex" && sessionId) clearProviderSessionPin(provider, sessionId, credentials.connectionId);
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;

@@ -31,6 +31,7 @@ export async function resolveSmartChoice({
   models,
   routerModel = DEFAULT_SYSTEMONE_ROUTER_MODEL,
   log,
+  paidFallback,
   timeoutMs = DEFAULT_SYSTEMONE_TIMEOUT_MS,
 }) {
   if (!Array.isArray(models) || models.length <= 1) return null;
@@ -56,8 +57,8 @@ export async function resolveSmartChoice({
     }
 
     const { provider, model } = modelInfo;
-    const credentials = await getProviderCredentials(provider, new Set(), model);
-    if (!credentials || credentials.allRateLimited) {
+    const credentials = await getProviderCredentials(provider, new Set(), model, { paidFallback });
+    if (!credentials || credentials.allRateLimited || credentials.paidFallbackBlocked) {
       log?.warn?.("COMBO", `smart-router: no credentials available for router provider "${provider}"`);
       return null;
     }

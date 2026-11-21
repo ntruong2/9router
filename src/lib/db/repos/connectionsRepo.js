@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
+import { appendQuotaHistory } from "../../../shared/services/smartQuota.js";
 
 const OPTIONAL_FIELDS = [
   "displayName", "email", "globalPriority", "defaultModel",
@@ -269,6 +270,13 @@ export async function updateProviderConnection(id, data) {
     const existing = rowToConn(row);
     const normalized = resetHealthStateOnActivation(existing, data);
     const merged = { ...existing, ...normalized, updatedAt: new Date().toISOString() };
+    if (normalized.smartQuotaSnapshot && existing.smartQuotaSnapshot?.fetchedAt > normalized.smartQuotaSnapshot.fetchedAt) {
+      merged.smartQuotaSnapshot = existing.smartQuotaSnapshot;
+      merged.smartQuotaHistory = existing.smartQuotaHistory;
+    } else if (normalized.smartQuotaSnapshot) {
+      const history = existing.smartQuotaHistory || (existing.smartQuotaSnapshot ? [existing.smartQuotaSnapshot] : []);
+      merged.smartQuotaHistory = appendQuotaHistory(history, normalized.smartQuotaSnapshot);
+    }
     upsert(db, merged);
     if (data.priority !== undefined) reorderInTx(db, existing.provider);
     result = merged;

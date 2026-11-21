@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getProviderConnections: vi.fn(),
   getSettings: vi.fn(),
+  updateProviderConnection: vi.fn(),
   resolveConnectionProxyConfig: vi.fn(),
   getAntigravityUsage: vi.fn(),
 }));
@@ -12,7 +13,7 @@ vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
   getProxyPools: vi.fn(),
   validateApiKey: vi.fn(),
-  updateProviderConnection: vi.fn(),
+  updateProviderConnection: mocks.updateProviderConnection,
 }));
 vi.mock("@/lib/network/connectionProxy", () => ({
   resolveConnectionProxyConfig: mocks.resolveConnectionProxyConfig,
@@ -28,7 +29,7 @@ vi.mock("open-sse/services/usage/google.js", () => ({
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
 const { getAntigravityQuotaCache, handleAntigravityQuotaError, refreshAntigravityQuota, clearAntigravityStrikes } = await import("@/sse/services/antigravityQuota.js");
-const { getProviderCredentials } = await import("@/sse/services/auth.js");
+const { getProviderCredentials, markAccountUnavailable } = await import("@/sse/services/auth.js");
 
 const MODEL = "claude-opus-4-6-thinking";
 const FUTURE_RESET = "2026-09-01T00:00:00.000Z";
@@ -41,6 +42,64 @@ beforeEach(() => {
 });
 
 describe("Antigravity quota-aware routing", () => {
+  it.each([
+    ["45", null, "Rate limited", 45],
+    ["Tue, 01 Sep 2026 00:01:00 GMT", null, "Rate limited", 60],
+    ["45", Date.parse("2026-09-01T00:02:00Z"), "Rate limited", 120],
+    ["45", null, "Quota reset after 2m", 120],
+    ["3600", null, "Rate limited", 1800],
+  ])("uses Retry-After %s when there is no precise reset", async (header, reset, message, seconds) => {
+    vi.useFakeTimers();
+    const now = Date.parse("2026-09-01T00:00:00Z");
+    vi.setSystemTime(now);
+    mocks.getProviderConnections.mockResolvedValue([{ id: "rate-account" }]);
+    try {
+      await expect(markAccountUnavailable("rate-account", 429, message, "codex", "model", reset, header))
+        .resolves.toEqual({ shouldFallback: true, cooldownMs: seconds * 1000 });
+      expect(mocks.updateProviderConnection).toHaveBeenCalledWith("rate-account", expect.objectContaining({
+        modelLock_model: new Date(now + seconds * 1000).toISOString(),
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("assigns five Codex sessions distinct accounts with fill-first enabled", async () => {
+    mocks.getSettings.mockResolvedValue({ sessionPin: { codex: true }, fallbackStrategy: "fill-first" });
+    mocks.getProviderConnections.mockResolvedValue(Array.from({ length: 15 }, (_, i) => ({
+      id: `cx-${i}`, provider: "codex", priority: i + 1, isActive: true,
+    })));
+    const ids = await Promise.all(Array.from({ length: 5 }, async (_, i) =>
+      (await getProviderCredentials("codex", null, "gpt-5.3-codex", { sessionId: `five-${i}` })).connectionId,
+    ));
+    expect(new Set(ids).size).toBe(5);
+    const remapped = await getProviderCredentials("codex", ids[0], "gpt-5.3-codex", { sessionId: "five-0" });
+    expect(ids).not.toContain(remapped.connectionId);
+    await expect(getProviderCredentials("codex", null, "gpt-5.3-codex", { sessionId: "five-0" }))
+      .resolves.toMatchObject({ connectionId: remapped.connectionId });
+  });
+
+  it("keeps Codex session pin opt-in and supports other configured providers", async () => {
+    mocks.getSettings.mockResolvedValue({ sessionPin: { claude: true } });
+    mocks.getProviderConnections.mockResolvedValue([{ id: "opt-a", isActive: true }, { id: "opt-b", isActive: true }]);
+    const ids = async (provider) => Promise.all(["opt-first", "opt-second"].map(async (sessionId) =>
+      (await getProviderCredentials(provider, null, "model", { sessionId })).connectionId));
+    expect(await ids("codex")).toEqual(["opt-a", "opt-a"]);
+    expect(await ids("claude")).toEqual(["opt-a", "opt-b"]);
+  });
+
+  it("assigns new pinned sessions to accounts with available capacity", async () => {
+    mocks.getSettings.mockResolvedValue({ sessionPin: { codex: true }, smartQuotaUse: false });
+    mocks.getProviderConnections.mockResolvedValue([
+      { id: "load-a", isActive: true },
+      { id: "load-b", isActive: true },
+      { id: "load-c", isActive: true },
+    ]);
+    const credentials = await Promise.all(["load-1", "load-2", "load-3"].map((sessionId) =>
+      getProviderCredentials("codex", null, "model", { sessionId, reserveChatSlot: true })));
+    expect(new Set(credentials.map((item) => item.connectionId)).size).toBe(3);
+    credentials.forEach((item) => item.releaseChatSlot?.());
+  });
   it("records exhausted upstream quota after 429 and returns its exact reset time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
@@ -115,6 +174,55 @@ describe("Antigravity quota-aware routing", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("prefers the fresh account with more quota when Smart Use is enabled", async () => {
+    mocks.getSettings.mockResolvedValue({ smartQuotaUse: true });
+    mocks.getProviderConnections.mockResolvedValue([
+      {
+        id: "ag-low",
+        email: "low@example.com",
+        isActive: true,
+        priority: 1,
+        smartQuotaSnapshot: {
+          fetchedAt: new Date(Date.now() - 30_000).toISOString(),
+          quotas: [{ remainingPercentage: 20 }],
+        },
+      },
+      {
+        id: "ag-high",
+        email: "high@example.com",
+        isActive: true,
+        priority: 2,
+        smartQuotaSnapshot: {
+          fetchedAt: new Date(Date.now() - 30_000).toISOString(),
+          quotas: [{ remainingPercentage: 90 }],
+        },
+      },
+    ]);
+
+    await expect(getProviderCredentials("antigravity", null, MODEL)).resolves.toMatchObject({
+      connectionId: "ag-high",
+      connectionName: "high@example.com",
+    });
+  });
+
+  it("prefers the account whose matching model bucket is healthy", async () => {
+    mocks.getSettings.mockResolvedValue({ smartQuotaUse: true });
+    mocks.getProviderConnections.mockResolvedValue([
+      { id: "ag-unrelated", email: "unrelated@example.com", isActive: true, priority: 1, smartQuotaSnapshot: { fetchedAt: new Date(Date.now() - 30_000).toISOString(), quotas: [{ key: "gemini", remainingPercentage: 95 }] } },
+      { id: "ag-match", email: "match@example.com", isActive: true, priority: 2, smartQuotaSnapshot: { fetchedAt: new Date(Date.now() - 30_000).toISOString(), quotas: [{ key: "claude-opus", remainingPercentage: 70 }] } },
+    ]);
+    await expect(getProviderCredentials("antigravity", null, "claude-opus")).resolves.toMatchObject({ connectionId: "ag-match" });
+  });
+
+  it("uses Antigravity group buckets for model-aware selection", async () => {
+    mocks.getSettings.mockResolvedValue({ smartQuotaUse: true });
+    mocks.getProviderConnections.mockResolvedValue([
+      { id: "ag-group-empty", email: "empty@example.com", isActive: true, priority: 1, smartQuotaSnapshot: { fetchedAt: new Date(Date.now() - 30_000).toISOString(), quotas: [{ key: "group:gemini-4-neon:weekly", remainingPercentage: 0 }, { key: "gemini", remainingPercentage: 90 }] } },
+      { id: "ag-base", email: "base@example.com", isActive: true, priority: 2, smartQuotaSnapshot: { fetchedAt: new Date(Date.now() - 30_000).toISOString(), quotas: [{ key: "gemini", remainingPercentage: 50 }] } },
+    ]);
+    await expect(getProviderCredentials("antigravity", null, "gemini-4-neon")).resolves.toMatchObject({ connectionId: "ag-base" });
   });
 
   it("coalesces concurrent quota refreshes for one account", async () => {

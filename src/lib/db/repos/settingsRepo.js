@@ -14,6 +14,17 @@ const DEFAULT_SETTINGS = {
   stickyRoundRobinLimit: 3,
   providerStrategies: {},
   quotaVisibility: {},
+  smartQuotaUse: true,
+  smartQuotaForecast: true,
+  smartQuotaAlerts: true,
+  smartQuotaBackgroundRefresh: false,
+  smartQuotaRefreshIntervalMs: 8 * 60 * 1000,
+  smartQuotaRefreshConcurrency: 2,
+  smartQuotaRefreshJitterMs: 15000,
+  paidFallback: { enabled: false, providers: [], combos: [] },
+  sessionPin: {},
+  sessionMaxConcurrent: {},
+  codexSessionPin: false,
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
@@ -117,6 +128,8 @@ export async function updateSettings(updates) {
     const row = db.get(`SELECT data FROM settings WHERE id = 1`);
     const current = row ? parseJson(row.data, {}) : {};
     next = { ...current, ...updates };
+    if (updates.sessionPin) next.sessionPin = { ...current.sessionPin, ...updates.sessionPin };
+    if (updates.sessionMaxConcurrent) next.sessionMaxConcurrent = { ...current.sessionMaxConcurrent, ...updates.sessionMaxConcurrent };
     db.run(
       `INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
       [stringifyJson(next)],

@@ -3,6 +3,7 @@ import { getSettings, updateSettings } from "@/lib/localDb";
 import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
+import { MAX_SESSION_CONCURRENCY } from "@/shared/services/sessionLoad.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -41,6 +42,50 @@ export async function PATCH(request) {
 
     // Strip protected secrets before any internal handling sets them
     for (const key of PROTECTED_SETTING_KEYS) delete body[key];
+    if (Object.hasOwn(body, "smartQuotaUse") && typeof body.smartQuotaUse !== "boolean") {
+      return NextResponse.json({ error: "smartQuotaUse must be a boolean" }, { status: 400 });
+    }
+    for (const key of ["smartQuotaForecast", "smartQuotaAlerts"]) {
+      if (Object.hasOwn(body, key) && typeof body[key] !== "boolean") {
+        return NextResponse.json({ error: `${key} must be a boolean` }, { status: 400 });
+      }
+    }
+    if (Object.hasOwn(body, "smartQuotaBackgroundRefresh") && typeof body.smartQuotaBackgroundRefresh !== "boolean") {
+      return NextResponse.json({ error: "smartQuotaBackgroundRefresh must be a boolean" }, { status: 400 });
+    }
+    if (Object.hasOwn(body, "codexSessionPin") && typeof body.codexSessionPin !== "boolean") {
+      return NextResponse.json({ error: "codexSessionPin must be a boolean" }, { status: 400 });
+    }
+    for (const [key, isValid, description] of [
+      ["sessionPin", (value) => typeof value === "boolean", "booleans"],
+      ["sessionMaxConcurrent", (value) => Number.isInteger(value) && value >= 1 && value <= MAX_SESSION_CONCURRENCY,
+        `integers from 1 to ${MAX_SESSION_CONCURRENCY}`],
+    ]) {
+      if (!Object.hasOwn(body, key)) continue;
+      const values = body[key];
+      if (!values || typeof values !== "object" || Array.isArray(values) || Object.keys(values).length > 512 ||
+          Object.entries(values).some(([id, value]) => !/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(id) ||
+            Object.hasOwn(Object.prototype, id) || !isValid(value))) {
+        return NextResponse.json({ error: `${key} must map provider IDs to ${description}` }, { status: 400 });
+      }
+    }
+    for (const [key, min, max] of [["smartQuotaRefreshIntervalMs", 60_000, 600_000], ["smartQuotaRefreshConcurrency", 1, 8], ["smartQuotaRefreshJitterMs", 0, 60_000]]) {
+      if (Object.hasOwn(body, key)) {
+        const value = body[key];
+        if (!Number.isInteger(value) || value < min || value > max) {
+          return NextResponse.json({ error: `${key} must be between ${min} and ${max}` }, { status: 400 });
+        }
+      }
+    }
+    if (Object.hasOwn(body, "paidFallback")) {
+      const policy = body.paidFallback;
+      if (!policy || typeof policy !== "object" || typeof policy.enabled !== "boolean" ||
+          [policy.providers, policy.combos].some((list) =>
+            list !== undefined && (!Array.isArray(list) || list.length > 200 ||
+              list.some((value) => typeof value !== "string" || !value.trim() || value.length > 128)))) {
+        return NextResponse.json({ error: "paidFallback must contain enabled, providers, and combos" }, { status: 400 });
+      }
+    }
 
     // If updating password, hash it
     if (body.newPassword) {
@@ -106,6 +151,12 @@ export async function PATCH(request) {
           configureQuotaAutoPing(settings);
         })
         .catch((error) => console.warn("[AutoPing] settings update failed:", error.message));
+    }
+
+    if (Object.keys(body).some((key) => key.startsWith("smartQuotaRefresh")) || Object.hasOwn(body, "smartQuotaBackgroundRefresh")) {
+      import("@/shared/services/smartQuotaRefresh")
+        .then(({ configureSmartQuotaRefresh }) => configureSmartQuotaRefresh(settings))
+        .catch((error) => console.warn("[SmartQuota] settings update failed:", error.message));
     }
 
     const { password, oidcClientSecret, ...safeSettings } = settings;

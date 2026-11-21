@@ -8,6 +8,8 @@ import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
+import { buildQuotaSnapshot, SMART_QUOTA_FETCHED_AT_HEADER } from "@/shared/services/smartQuota.js";
+import { parseQuotaData } from "@/app/(dashboard)/dashboard/usage/components/ProviderLimits/utils.js";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -136,71 +138,104 @@ export async function GET(request, { params }) {
   try {
     const { connectionId } = await params;
     const force = new URL(request.url).searchParams.get("force") === "1";
-
-
-    // Get connection from database
     connection = await getProviderConnectionById(connectionId);
     if (!connection) {
       return Response.json({ error: "Connection not found" }, { status: 404 });
     }
 
-    // Allow OAuth connections, plus whitelisted apikey providers (glm/minimax/kiro/...)
-    // Kiro's headless api-key flow persists authType "api_key" (underscore) while
-    // generic apikey providers persist "apikey" — accept both spellings here.
-    const isOAuth = connection.authType === "oauth";
-    const isApikeyAuth =
-      connection.authType === "apikey" || connection.authType === "api_key";
-    const isApikeyEligible =
-      isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
-    // Lease connections borrow the desktop app's token inside the usage handler.
-    const isLease = isLeaseConnection(connection);
-
-    if (!isOAuth && !isApikeyEligible && !isLease) {
-      return Response.json({ message: "Usage not available for this connection" });
-    }
-
-    // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
-    const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
-    const proxyOptions = {
-      connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
-      connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
-      connectionNoProxy: proxyConfig.connectionNoProxy || "",
-      vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
-      strictProxy: false,
-    };
-
-    // Refresh credentials only for OAuth connections (apikey has no token refresh)
-    if (isOAuth) {
-      try {
-        const result = await refreshAndUpdateCredentials(connection, false, proxyOptions);
-        connection = result.connection;
-      } catch (refreshError) {
-        console.error("[Usage API] Credential refresh failed:", refreshError);
-        return Response.json({
-          error: `Credential refresh failed: ${refreshError.message}`
-        }, { status: 401 });
-      }
-    }
-
-    // Fetch usage from provider API
-    let usage = await getUsageForProvider(connection, proxyOptions, { force });
-
-    // If provider returned an auth-expired message instead of throwing,
-    // force-refresh token and retry once (OAuth only)
-    if (isOAuth && isAuthExpiredMessage(usage) && connection.refreshToken) {
-      try {
-        const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
-        connection = retryResult.connection;
-        usage = await getUsageForProvider(connection, proxyOptions, { force });
-      } catch (retryError) {
-        console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
-      }
-    }
-
-    return Response.json(usage);
+    return await readConnectionQuota(connection, force);
   } catch (error) {
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Usage] ${provider}: ${error.message}`);
     return Response.json({ error: error.message }, { status: 500 });
   }
+}
+
+const quotaReads = globalThis[Symbol.for("9router.quotaReads")] ??= new Map();
+
+// Dashboard and scheduled reads share a single in-flight request per account.
+export async function readConnectionQuota(connection, force = false) {
+  const pending = quotaReads.get(connection.id);
+  if (pending) {
+    if (!force || pending.force) return (await pending.result).clone();
+    await pending.result.catch(() => {});
+    return readConnectionQuota(connection, true);
+  }
+
+  const result = fetchConnectionQuota(connection, force);
+  quotaReads.set(connection.id, { force, result });
+  try {
+    return (await result).clone();
+  } finally {
+    quotaReads.delete(connection.id);
+  }
+}
+
+async function fetchConnectionQuota(connection, force) {
+  const requestedAt = new Date().toISOString();
+  // Allow OAuth connections, plus whitelisted apikey providers (glm/minimax/kiro/...)
+  // Kiro's headless api-key flow persists authType "api_key" (underscore) while
+  // generic apikey providers persist "apikey" — accept both spellings here.
+  const isOAuth = connection.authType === "oauth";
+  const isApikeyAuth =
+    connection.authType === "apikey" || connection.authType === "api_key";
+  const isApikeyEligible =
+    isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
+  // Lease connections borrow the desktop app's token inside the usage handler.
+  const isLease = isLeaseConnection(connection);
+
+  if (!isOAuth && !isApikeyEligible && !isLease) {
+    return Response.json({ message: "Usage not available for this connection" });
+  }
+
+  // Resolve connection proxy config; force strictProxy=false so quota/refresh fall back to direct on failure
+  const proxyConfig = await resolveConnectionProxyConfig(connection.providerSpecificData);
+  const proxyOptions = {
+    connectionProxyEnabled: proxyConfig.connectionProxyEnabled === true,
+    connectionProxyUrl: proxyConfig.connectionProxyUrl || "",
+    connectionNoProxy: proxyConfig.connectionNoProxy || "",
+    vercelRelayUrl: proxyConfig.vercelRelayUrl || "",
+    strictProxy: false,
+  };
+
+  // Refresh credentials only for OAuth connections (apikey has no token refresh)
+  if (isOAuth) {
+    try {
+      const result = await refreshAndUpdateCredentials(connection, false, proxyOptions);
+      connection = result.connection;
+    } catch (refreshError) {
+      console.error("[Usage API] Credential refresh failed:", refreshError);
+      return Response.json({
+        error: `Credential refresh failed: ${refreshError.message}`
+      }, { status: 401 });
+    }
+  }
+
+  // Fetch usage from provider API
+  let usage = await getUsageForProvider(connection, proxyOptions, { force });
+
+  // If provider returned an auth-expired message instead of throwing,
+  // force-refresh token and retry once (OAuth only)
+  if (isOAuth && isAuthExpiredMessage(usage) && connection.refreshToken) {
+    try {
+      const retryResult = await refreshAndUpdateCredentials(connection, true, proxyOptions);
+      connection = retryResult.connection;
+      usage = await getUsageForProvider(connection, proxyOptions, { force });
+    } catch (retryError) {
+      console.warn(`[Usage] ${connection.provider}: force refresh failed: ${retryError.message}`);
+    }
+  }
+
+  const smartQuotaSnapshot = usage?.quotas && !usage.message
+    ? buildQuotaSnapshot(parseQuotaData(connection.provider, usage), usage.quotaFetchedAt || requestedAt)
+    : null;
+  if (smartQuotaSnapshot) {
+    await updateProviderConnection(connection.id, { smartQuotaSnapshot }).catch((error) => {
+      console.warn("[Usage] Could not save quota snapshot:", error.message);
+    });
+  }
+  const { quotaFetchedAt: _quotaFetchedAt, ...body } = usage;
+  return Response.json(body, smartQuotaSnapshot
+    ? { headers: { [SMART_QUOTA_FETCHED_AT_HEADER]: smartQuotaSnapshot.fetchedAt } }
+    : undefined);
 }

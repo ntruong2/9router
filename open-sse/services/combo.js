@@ -365,6 +365,7 @@ export async function handleComboChat({
   sessionSticky = true,
   confidenceThreshold = 0.8,
   resolveSmartChoice = null,
+  onAttempt = null,
 }) {
   let rotatedModels = models;
   let activeStickyModel = null;
@@ -467,13 +468,16 @@ export async function handleComboChat({
   let earliestRetryAfter = null;
   let lastStatus = null;
   let requestScopedResult = null;
+  let blockedFallback = null;
 
   for (let i = 0; i < rotatedModels.length; i++) {
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
     try {
-      const result = await handleSingleModel(body, modelStr);
+      const result = onAttempt
+        ? await onAttempt(body, modelStr, i > 0)
+        : await handleSingleModel(body, modelStr);
       
       // Success (2xx). A 2xx is necessary but NOT sufficient: Gemini aborts (e.g.
       // MALFORMED_FUNCTION_CALL) still return 200 and stream empty content, which would
@@ -561,6 +565,11 @@ export async function handleComboChat({
         const errorBody = await result.clone().json();
         errorText = errorBody?.error?.message || errorBody?.error || errorBody?.message || errorText;
         retryAfter = errorBody?.retryAfter || null;
+        if (result.status === 402 && errorBody?.error?.code === "paid_fallback_blocked") {
+          blockedFallback = errorBody.error;
+          if (retryAfter && (!earliestRetryAfter || Date.parse(retryAfter) < Date.parse(earliestRetryAfter))) earliestRetryAfter = retryAfter;
+          continue;
+        }
       } catch {
         // Ignore JSON parse errors
       }
@@ -628,6 +637,12 @@ export async function handleComboChat({
   // synthesized one reaches the client as a 200 carrying an error object, which
   // reads as an empty success, and it buries the member that named the real cause.
   // This is also what the caller saw before combos advanced on these errors.
+  if (blockedFallback) {
+    return Response.json({
+      error: { ...blockedFallback, type: "paid_fallback_blocked", code: "paid_fallback_blocked" },
+      retryAfter: earliestRetryAfter,
+    }, { status: 402 });
+  }
   if (requestScopedResult) {
     log.warn("COMBO", `No model served the request; returning the first request-scoped failure (${requestScopedResult.status})`);
     return requestScopedResult;

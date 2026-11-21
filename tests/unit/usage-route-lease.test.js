@@ -3,9 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // MiniMax desktop-lease connections store no token: the usage handler borrows one
 // from the broker. The route must let them through instead of answering
 // "Usage not available".
-const mocks = vi.hoisted(() => ({ getConnection: vi.fn(), getUsage: vi.fn() }));
+const mocks = vi.hoisted(() => ({ getConnection: vi.fn(), getUsage: vi.fn(), updateConnection: vi.fn() }));
 vi.mock("open-sse/index.js", () => ({}));
-vi.mock("../../src/lib/localDb.js", () => ({ getProviderConnectionById: mocks.getConnection, updateProviderConnection: vi.fn() }));
+vi.mock("../../src/lib/localDb.js", () => ({ getProviderConnectionById: mocks.getConnection, updateProviderConnection: mocks.updateConnection }));
 vi.mock("open-sse/services/usage.js", () => ({ getUsageForProvider: mocks.getUsage }));
 vi.mock("@/lib/network/connectionProxy", () => ({ resolveConnectionProxyConfig: async () => ({}) }));
 vi.mock("@/lib/auth/dashboardPrivacy", () => ({ sanitizeDashboardResponse: async (value) => value }));
@@ -13,7 +13,10 @@ vi.mock("@/lib/auth/dashboardPrivacy", () => ({ sanitizeDashboardResponse: async
 const { GET } = await import("../../src/app/api/usage/[connectionId]/route.js");
 const call = () => GET(new Request("http://localhost/api/usage/c1"), { params: Promise.resolve({ connectionId: "c1" }) });
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  mocks.updateConnection.mockResolvedValue(null);
+});
 
 describe("usage route for MiniMax lease connections", () => {
   it("fetches usage for an mcode-lease connection", async () => {
@@ -24,6 +27,9 @@ describe("usage route for MiniMax lease connections", () => {
 
     expect(mocks.getUsage).toHaveBeenCalledOnce();
     expect(body).toEqual({ quotas: { Credits: { used: 0, total: 5 } } });
+    expect(mocks.updateConnection).toHaveBeenCalledWith("c1", expect.objectContaining({
+      smartQuotaSnapshot: { fetchedAt: expect.any(String), quotas: [{ key: "credits", remainingPercentage: 100, resetAt: null }] },
+    }));
   });
 
   it("still refuses connections with no usage path", async () => {
