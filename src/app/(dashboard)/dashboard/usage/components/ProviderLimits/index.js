@@ -212,6 +212,7 @@ export default function ProviderLimits() {
   const [codexSessionPin, setCodexSessionPin] = useState(true);
   const [sessionMaxConcurrent, setSessionMaxConcurrent] = useState({});
   const [sessionLoadStatus, setSessionLoadStatus] = useState({});
+  const [imageLoadStatus, setImageLoadStatus] = useState({});
   const addNotification = useNotificationStore((state) => state.addNotification);
   const [expiringFirst, setExpiringFirst] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
@@ -358,12 +359,19 @@ export default function ProviderLimits() {
     let timer;
     const load = async () => {
       try {
-        const response = await fetch("/api/usage/session-load", { cache: "no-store", signal: controller.signal });
-        if (!response.ok) throw new Error("Failed to fetch session load");
-        const data = await response.json();
-        if (!controller.signal.aborted) setSessionLoadStatus(Object.fromEntries(data.accounts.map((entry) => [entry.connectionId, entry])));
+        const [chatResponse, imageResponse] = await Promise.all([
+          fetch("/api/usage/session-load", { cache: "no-store", signal: controller.signal }),
+          fetch("/api/usage/image-load", { cache: "no-store", signal: controller.signal }),
+        ]);
+        if (!chatResponse.ok || !imageResponse.ok) throw new Error("Failed to fetch load status");
+        const [chatData, imageData] = await Promise.all([chatResponse.json(), imageResponse.json()]);
+        if (!controller.signal.aborted) {
+          setSessionLoadStatus(Object.fromEntries(chatData.accounts.map((entry) => [entry.connectionId, entry])));
+          setImageLoadStatus(Object.fromEntries(imageData.accounts.map((entry) => [entry.connectionId, entry])));
+        }
       } catch {
         if (!controller.signal.aborted) setSessionLoadStatus({});
+        if (!controller.signal.aborted) setImageLoadStatus({});
       } finally {
         if (!controller.signal.aborted) timer = setTimeout(load, 5000);
       }
@@ -1419,6 +1427,7 @@ export default function ProviderLimits() {
           const forecast = forecastByConnection.get(conn.id);
           const quotaAlert = alertByConnection.get(conn.id);
           const sessionLoad = !isInactive && sessionLoadStatus[conn.id];
+          const imageLoad = !isInactive && imageLoadStatus[conn.id];
 
           return (
             <Card
@@ -1479,6 +1488,11 @@ export default function ProviderLimits() {
                           {sessionLoad.overloaded && " · At capacity"}
                           {sessionLoad.ewmaLatencyMs > 0 && ` · ${Math.round(sessionLoad.ewmaLatencyMs)}ms avg`}
                           {sessionLoad.recentErrors > 0 && ` · ${sessionLoad.recentErrors} recent error${sessionLoad.recentErrors === 1 ? "" : "s"}`}
+                        </p>
+                      )}
+                      {imageLoad && imageLoad.running > 0 && (
+                        <p className={`text-[11px] ${imageLoad.overloaded ? "font-semibold text-orange-700 dark:text-orange-300" : "text-text-muted"}`}>
+                          {imageLoad.running}/{imageLoad.maxConcurrent} image jobs
                         </p>
                       )}
                       {getConnectionSecondaryLabel(conn) ? (

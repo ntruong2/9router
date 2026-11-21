@@ -10,11 +10,13 @@ import { getPaidFallbackDecision } from "@/shared/services/fallbackPolicy.js";
 import { createSessionPinState, getPinnedConnectionId, pinConnection, clearSessionPin, isSessionPinEnabled, leastSharedConnections } from "@/shared/services/sessionAccountPin.js";
 import { getConnectionQuotaHealth, getRecommendedConnection, matchQuotaRows } from "@/shared/services/smartQuota.js";
 import { createSessionLoadState, DEFAULT_SESSION_CONCURRENCY, getConnectionLoad, getRateLimitResetFromHeader, reserveConnectionLoad, selectLeastLoadedConnections, snapshotSessionLoad, waitForConnectionLoad } from "@/shared/services/sessionLoad.js";
+import { createImageLoadState, DEFAULT_IMAGE_CONCURRENT, getImageLoad, reserveImageSlot, selectLeastLoadedImageConnections, waitForImageSlot } from "@/shared/services/imageLoad.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 const sessionPins = globalThis[Symbol.for("9router.sessionAccountPins")] ||= createSessionPinState();
 const sessionLoad = globalThis[Symbol.for("9router.sessionLoad")] ||= createSessionLoadState();
+const imageLoad = globalThis[Symbol.for("9router.imageLoad")] ||= createImageLoadState();
 
 export function clearProviderSessionPin(provider, sessionId, connectionId = null) {
   clearSessionPin(sessionPins, resolveProviderId(provider), sessionId, connectionId);
@@ -22,6 +24,14 @@ export function clearProviderSessionPin(provider, sessionId, connectionId = null
 
 export function getSessionLoadSnapshot(connections, settings) {
   return snapshotSessionLoad(sessionLoad, connections.filter(({ provider }) => isSessionPinEnabled(settings, provider)), settings.sessionMaxConcurrent);
+}
+
+export function getImageLoadSnapshot(connections, settings) {
+  return connections.map(({ id, provider }) => {
+    const load = getImageLoad(imageLoad, id);
+    const maxConcurrent = settings.imageMaxConcurrent?.[provider] ?? DEFAULT_IMAGE_CONCURRENT;
+    return { connectionId: id, provider, ...load, maxConcurrent, overloaded: load.running >= maxConcurrent };
+  });
 }
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
@@ -169,6 +179,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const pinConfigured = isSessionPinEnabled(settings, providerId);
     const sessionPinEnabled = options.sessionId && pinConfigured;
     const balanceLoad = options.reserveChatSlot === true && pinConfigured;
+    const balanceImageLoad = options.reserveImageSlot === true;
     const pinnedSessionId = sessionPinEnabled ? getPinnedConnectionId(sessionPins, providerId, options.sessionId) : null;
     if (options.paidFallback && settings.paidFallback?.enabled === true) {
       let denial;
@@ -204,6 +215,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     const preferred = availableConnections.find(({ id }) => id === preferredConnectionId);
     const pinned = availableConnections.find(({ id }) => id === pinnedSessionId);
+    if (balanceImageLoad) {
+      imageLoad.maxQueue = settings.imageQueueMaxSize || imageLoad.maxQueue;
+      const maxConcurrent = settings.imageMaxConcurrent?.[providerId] ?? DEFAULT_IMAGE_CONCURRENT;
+      const candidates = availableConnections.filter(({ id }) => getImageLoad(imageLoad, id).running < maxConcurrent);
+      if (!candidates.length) {
+        return { waitForImageSlot: (timeoutMs, signal) => waitForImageSlot(imageLoad, timeoutMs, signal) };
+      }
+      availableConnections = selectLeastLoadedImageConnections(imageLoad, candidates);
+    }
     if (balanceLoad) {
       const limit = settings.sessionMaxConcurrent?.[providerId] ?? DEFAULT_SESSION_CONCURRENCY;
       const hasCapacity = ({ id }) => getConnectionLoad(sessionLoad, id).activeRequests < limit;
@@ -217,7 +237,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     }
     let decision;
-    if (preferred) {
+    if (balanceImageLoad) {
+      decision = { selected: availableConnections[0], reason: "image-load-balanced" };
+    } else if (preferred) {
       decision = { selected: preferred, reason: "pinned" };
     } else if (sessionPinEnabled) {
       const candidates = balanceLoad ? selectLeastLoadedConnections(sessionLoad, availableConnections) : availableConnections;
@@ -242,9 +264,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const releaseChatSlot = balanceLoad
       ? reserveConnectionLoad(sessionLoad, connection.id, { maxConcurrent: settings.sessionMaxConcurrent?.[providerId] ?? DEFAULT_SESSION_CONCURRENCY })
       : undefined;
+    const releaseImageSlot = balanceImageLoad
+      ? reserveImageSlot(imageLoad, connection.id, { maxConcurrent: settings.imageMaxConcurrent?.[providerId] ?? DEFAULT_IMAGE_CONCURRENT })
+      : undefined;
 
     return {
       releaseChatSlot,
+      releaseImageSlot,
       authType: connection.authType,
       apiKey: connection.apiKey,
       accessToken: connection.accessToken,

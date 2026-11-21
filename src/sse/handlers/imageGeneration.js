@@ -19,6 +19,8 @@ import { saveRequestUsage } from "@/lib/usageDb.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
+const imageIdempotency = globalThis[Symbol.for("9router.imageIdempotency")] ||= new Map();
+const IMAGE_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 
 function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
   if (!usage || typeof usage !== "object") return;
@@ -77,6 +79,7 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
   const openAiStream = edit && body.stream === true;
   delete body.stream;
   const modelStr = body.model;
+  const idempotencyKey = request.headers.get("Idempotency-Key")?.trim();
 
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
@@ -100,22 +103,36 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit }),
+        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs }),
         log,
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
       });
     }
-    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit });
+    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs });
   };
 
-  if (openAiStream && !binaryOutput) return openAiSseFromResponse(run(), "image_edit");
-  if (wantsStream && !binaryOutput) return sseFromResponse(run());
+  let responsePromise = run();
+  if (idempotencyKey) {
+    const cacheKey = `${apiKey || "local"}:${idempotencyKey}`;
+    const existing = imageIdempotency.get(cacheKey);
+    if (existing && existing.expiresAt > Date.now()) responsePromise = existing.promise.then((response) => response.clone());
+    else {
+      const cachedPromise = responsePromise.then((response) => response.clone());
+      imageIdempotency.set(cacheKey, { promise: cachedPromise, expiresAt: Date.now() + IMAGE_IDEMPOTENCY_TTL_MS });
+      cachedPromise.finally(() => setTimeout(() => {
+        const current = imageIdempotency.get(cacheKey);
+        if (current?.promise === cachedPromise) imageIdempotency.delete(cacheKey);
+      }, IMAGE_IDEMPOTENCY_TTL_MS)).catch(() => {});
+    }
+  }
+  if (openAiStream && !binaryOutput) return openAiSseFromResponse(responsePromise, "image_edit");
+  if (wantsStream && !binaryOutput) return sseFromResponse(responsePromise);
   // Edits routinely take 60-120s. Behind Cloudflare an idle origin is cut at 120s (HTTP 524), so a
   // slow plain-JSON request is answered early and kept alive with whitespace until the body is ready.
-  if (edit && !binaryOutput) return jsonWithKeepalive(run(), JSON_KEEPALIVE_AFTER_MS);
-  return run();
+  if (edit && !binaryOutput) return jsonWithKeepalive(responsePromise, JSON_KEEPALIVE_AFTER_MS);
+  return responsePromise;
 }
 
 const JSON_KEEPALIVE_AFTER_MS = 90000;
@@ -262,7 +279,7 @@ function buildEditBody(body, provider, model) {
   return { body: images.length === 1 ? { ...rest, image: images[0] } : { ...rest, images } };
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit, signal, queueTimeoutMs } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -276,12 +293,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
-    const result = await handleImageGenerationCore({
-      body,
-      modelInfo: { provider, model },
-      credentials: null,
-      binaryOutput,
-    });
+    const result = await handleImageGenerationCore({ body, modelInfo: { provider, model }, credentials: null, binaryOutput });
     if (result.success) return result.response;
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
   }
@@ -292,7 +304,16 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   let lastStatus = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      preferredConnectionId,
+      reserveImageSlot: true,
+    });
+
+    if (credentials?.waitForImageSlot) {
+      const timeoutMs = queueTimeoutMs || 30_000;
+      if (await credentials.waitForImageSlot(timeoutMs, signal)) continue;
+      return unavailableResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `[${provider}/${model}] image capacity is full`, new Date(Date.now() + timeoutMs).toISOString(), `retry after ${Math.ceil(timeoutMs / 1000)}s`);
+    }
 
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
@@ -306,7 +327,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
-    const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    let refreshedCredentials;
+    try {
+      refreshedCredentials = await checkAndRefreshToken(provider, credentials);
+    } catch (error) {
+      credentials.releaseImageSlot?.();
+      throw error;
+    }
 
     // Skip accounts the adapter knows cannot generate images (e.g. ChatGPT Free on codex)
     // without locking them: they stay usable for chat.
@@ -314,12 +341,15 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     if (adapter?.canUseCredentials && !adapter.canUseCredentials(refreshedCredentials)) {
       log.info("IMAGE", `[${provider}/${model}] skip connection ${credentials.connectionId.slice(0, 8)}: plan not entitled to image generation`);
       excludeConnectionIds.add(credentials.connectionId);
+      credentials.releaseImageSlot?.();
       lastError = lastError || "No account entitled to image generation (ChatGPT Free plans are not supported)";
       lastStatus = lastStatus || HTTP_STATUS.FORBIDDEN;
       continue;
     }
 
-    const result = await handleImageGenerationCore({
+    let result;
+    try {
+      result = await handleImageGenerationCore({
       body,
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
@@ -351,9 +381,18 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           await updateProviderCredentials(credentials.connectionId, { apiKey: refreshedCredentials.apiKey });
         }
       }
-    });
+      });
+    } catch (error) {
+      credentials.releaseImageSlot?.({ error: true });
+      throw error;
+    }
 
-    if (result.success) return result.response;
+    if (result.success) {
+      credentials.releaseImageSlot?.();
+      return result.response;
+    }
+
+    credentials.releaseImageSlot?.();
 
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs || null);
 

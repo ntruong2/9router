@@ -24,6 +24,10 @@ const DEFAULT_SETTINGS = {
   paidFallback: { enabled: false, providers: [], combos: [] },
   sessionPin: {},
   sessionMaxConcurrent: {},
+  imageMaxConcurrent: {},
+  imageQueueMaxSize: 50,
+  imageQueueTimeoutMs: 30000,
+  imageRetryLimit: 1,
   codexSessionPin: false,
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
@@ -130,6 +134,7 @@ export async function updateSettings(updates) {
     next = { ...current, ...updates };
     if (updates.sessionPin) next.sessionPin = { ...current.sessionPin, ...updates.sessionPin };
     if (updates.sessionMaxConcurrent) next.sessionMaxConcurrent = { ...current.sessionMaxConcurrent, ...updates.sessionMaxConcurrent };
+    if (updates.imageMaxConcurrent) next.imageMaxConcurrent = { ...current.imageMaxConcurrent, ...updates.imageMaxConcurrent };
     db.run(
       `INSERT INTO settings(id, data) VALUES(1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
       [stringifyJson(next)],

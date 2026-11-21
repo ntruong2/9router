@@ -4,6 +4,7 @@ import { applyOutboundProxyEnv } from "@/lib/network/outboundProxy";
 import { resetComboRotation } from "open-sse/services/combo.js";
 import bcrypt from "bcryptjs";
 import { MAX_SESSION_CONCURRENCY } from "@/shared/services/sessionLoad.js";
+import { MAX_IMAGE_CONCURRENT } from "@/shared/services/imageLoad.js";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -60,6 +61,8 @@ export async function PATCH(request) {
       ["sessionPin", (value) => typeof value === "boolean", "booleans"],
       ["sessionMaxConcurrent", (value) => Number.isInteger(value) && value >= 1 && value <= MAX_SESSION_CONCURRENCY,
         `integers from 1 to ${MAX_SESSION_CONCURRENCY}`],
+      ["imageMaxConcurrent", (value) => Number.isInteger(value) && value >= 1 && value <= MAX_IMAGE_CONCURRENT,
+        `integers from 1 to ${MAX_IMAGE_CONCURRENT}`],
     ]) {
       if (!Object.hasOwn(body, key)) continue;
       const values = body[key];
@@ -67,6 +70,11 @@ export async function PATCH(request) {
           Object.entries(values).some(([id, value]) => !/^[a-z0-9][a-z0-9_-]{0,127}$/i.test(id) ||
             Object.hasOwn(Object.prototype, id) || !isValid(value))) {
         return NextResponse.json({ error: `${key} must map provider IDs to ${description}` }, { status: 400 });
+      }
+    }
+    for (const [key, min, max] of [["imageQueueMaxSize", 1, 500], ["imageQueueTimeoutMs", 1000, 300000], ["imageRetryLimit", 0, 2]]) {
+      if (Object.hasOwn(body, key) && (!Number.isInteger(body[key]) || body[key] < min || body[key] > max)) {
+        return NextResponse.json({ error: `${key} must be between ${min} and ${max}` }, { status: 400 });
       }
     }
     for (const [key, min, max] of [["smartQuotaRefreshIntervalMs", 60_000, 600_000], ["smartQuotaRefreshConcurrency", 1, 8], ["smartQuotaRefreshJitterMs", 0, 60_000]]) {
