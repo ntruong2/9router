@@ -1445,27 +1445,27 @@ export default function ProviderLimits() {
                         {providerLabel(conn.provider)}
                       </h3>
                       {isRecommended && (
-                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
-                          <span className="material-symbols-outlined text-[11px]">auto_awesome</span>
-                          Recommended
+                        <span className="mt-0.5 inline-flex items-center gap-0.5 rounded-full bg-emerald-500/10 px-1 py-px text-[9px] font-semibold leading-4 text-emerald-700 dark:text-emerald-300" title="Recommended account">
+                          <span className="material-symbols-outlined text-[10px]">auto_awesome</span>
+                          Top
                         </span>
                       )}
                       {quotaHealth?.stale && (
-                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
-                          <span className="material-symbols-outlined text-[11px]">schedule</span>
-                          Data stale
+                        <span className="mt-0.5 inline-flex items-center gap-0.5 rounded-full bg-amber-500/10 px-1 py-px text-[9px] font-semibold leading-4 text-amber-700 dark:text-amber-300" title="Quota data is stale">
+                          <span className="material-symbols-outlined text-[10px]">schedule</span>
+                          Stale
                         </span>
                       )}
                       {forecast && smartQuotaAlerts && (
-                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-orange-700 dark:text-orange-300">
-                          <span className="material-symbols-outlined text-[11px]">trending_down</span>
-                          ~{Math.max(1, Math.round(forecast.hoursUntilEmpty))}h left
+                        <span className="mt-0.5 inline-flex items-center gap-0.5 rounded-full bg-orange-500/10 px-1 py-px text-[9px] font-semibold leading-4 text-orange-700 dark:text-orange-300" title="Estimated time until quota exhaustion">
+                          <span className="material-symbols-outlined text-[10px]">trending_down</span>
+                          ~{Math.max(1, Math.round(forecast.hoursUntilEmpty))}h
                         </span>
                       )}
                       {quotaAlert?.resetSoon && smartQuotaAlerts && (
-                        <span className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 dark:text-blue-300">
-                          <span className="material-symbols-outlined text-[11px]">event_upcoming</span>
-                          Reset soon
+                        <span className="mt-0.5 inline-flex items-center gap-0.5 rounded-full bg-blue-500/10 px-1 py-px text-[9px] font-semibold leading-4 text-blue-700 dark:text-blue-300" title="Quota reset soon">
+                          <span className="material-symbols-outlined text-[10px]">event_upcoming</span>
+                          Reset
                         </span>
                       )}
                       {getConnectionLabel(conn) ? (
