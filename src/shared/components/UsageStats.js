@@ -20,6 +20,7 @@ const ProviderTopology = dynamic(() => import("@/app/(dashboard)/dashboard/usage
 const UsageChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/UsageChart"), { ssr: false });
 const ProviderBarChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/ProviderBarChart"), { ssr: false });
 const TopModelsChart = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/TopModelsChart"), { ssr: false });
+const SmartAnalytics = dynamic(() => import("@/app/(dashboard)/dashboard/usage/components/SmartAnalytics"), { ssr: false });
 
 function timeAgo(timestamp) {
   const diff = Math.floor((Date.now() - new Date(timestamp)) / 1000);
@@ -470,6 +471,8 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
 
       {/* Overview cards */}
       {loading ? spinner : <OverviewCards stats={stats} />}
+
+      {!loading && <SmartAnalytics period={period} />}
 
       {/* Provider topology + Recent Requests */}
       {loading ? spinner : (

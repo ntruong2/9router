@@ -243,7 +243,8 @@ export default function ProviderLimits() {
         const params = new URLSearchParams({
           page: String(targetPage),
           pageSize: String(pageSize),
-          accountStatus: accountFilter,
+          accountStatus: ["active", "inactive"].includes(accountFilter) ? accountFilter : "all",
+          quotaStatus: ["quota-available", "quota-exhausted"].includes(accountFilter) ? accountFilter : "all",
           sort: "priority",
         });
 

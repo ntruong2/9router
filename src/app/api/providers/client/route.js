@@ -4,6 +4,7 @@ import { backfillCodexEmails } from "@/lib/oauth/providers";
 import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
 import { getEarliestModelLockUntil } from "open-sse/services/accountFallback.js";
+import { getQuotaRemainingPercentage } from "@/shared/services/smartQuota.js";
 
 const SAFE_FIELDS = [
   "id", "provider", "authType", "name", "email", "displayName",
@@ -85,6 +86,7 @@ export async function GET(request) {
     const { searchParams } = new URL(request.url);
     const provider = searchParams.get("provider") || "all";
     const accountStatus = searchParams.get("accountStatus") || "all";
+    const quotaStatus = searchParams.get("quotaStatus") || "all";
     const sort = searchParams.get("sort") || "priority";
     const page = parsePositiveInt(searchParams.get("page"), 1);
     const pageSize = Math.min(parsePositiveInt(searchParams.get("pageSize"), DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
@@ -103,7 +105,18 @@ export async function GET(request) {
       return true;
     });
 
-    const sortedConnections = sortConnections(accountFilteredConnections, sort);
+    const quotaFilteredConnections = accountFilteredConnections.filter((conn) => {
+      if (quotaStatus === "all") return true;
+      const ratios = (conn.smartQuotaSnapshot?.quotas || [])
+        .map(getQuotaRemainingPercentage)
+        .filter((value) => Number.isFinite(value));
+      const remaining = ratios.length ? Math.min(...ratios) : null;
+      if (quotaStatus === "quota-available") return remaining !== null && remaining > 0;
+      if (quotaStatus === "quota-exhausted") return remaining === 0;
+      return true;
+    });
+
+    const sortedConnections = sortConnections(quotaFilteredConnections, sort);
     const total = sortedConnections.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const currentPage = Math.min(page, totalPages);

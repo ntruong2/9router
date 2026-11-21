@@ -1,4 +1,5 @@
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
+import { getQuotaRemainingPercentage } from "@/shared/services/smartQuota.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 export const QUOTA_CACHE_KEY = "quotaCacheData";
@@ -14,6 +15,8 @@ export const ACCOUNT_FILTER_OPTIONS = [
   { value: "all", label: "All accounts" },
   { value: "active", label: "Active" },
   { value: "inactive", label: "Turned off" },
+  { value: "quota-available", label: "Quota available" },
+  { value: "quota-exhausted", label: "Quota exhausted" },
 ];
 export const QUOTA_SORT_OPTIONS = [
   { value: "default", label: "Default quota order" },
@@ -30,10 +33,11 @@ export function getConnectionLabel(connection) {
 }
 
 export function getConnectionQuotaRemaining(connection, quotaData) {
-  const quota = quotaData[connection.id]?.quotas?.[0];
-  if (!quota) return Number.POSITIVE_INFINITY;
-  if (typeof quota.remaining === "number") return quota.remaining;
-  return Number.POSITIVE_INFINITY;
+  const quotas = quotaData[connection.id]?.quotas || [];
+  const ratios = quotas
+    .map((quota) => getQuotaRemainingPercentage(quota))
+    .filter((value) => Number.isFinite(value));
+  return ratios.length ? Math.min(...ratios) : Number.POSITIVE_INFINITY;
 }
 
 // Stable group-by-provider: first-seen provider order, original order within group.
@@ -58,6 +62,9 @@ export function sortVisibleConnections(
     return [...connections].sort((a, b) => {
       const remainingA = getConnectionQuotaRemaining(a, quotaData);
       const remainingB = getConnectionQuotaRemaining(b, quotaData);
+      const missingA = !Number.isFinite(remainingA);
+      const missingB = !Number.isFinite(remainingB);
+      if (missingA !== missingB) return missingA ? 1 : -1;
       const remainingDiff =
         quotaSortMode === "remaining-asc"
           ? remainingA - remainingB
@@ -133,7 +140,7 @@ export function getConnectionsEmptyMessage(totals, providerFilter, accountFilter
       description:
         providerFilter === "all"
           ? "Try changing the account status filter to see more quota trackers."
-          : `No ${accountFilter === "inactive" ? "turned off" : accountFilter === "active" ? "active" : "matching"} accounts found for ${providerFilter}.`,
+          : `No ${accountFilter === "inactive" ? "turned off" : accountFilter === "active" ? "active" : accountFilter === "quota-available" ? "available quota" : accountFilter === "quota-exhausted" ? "exhausted quota" : "matching"} accounts found for ${providerFilter}.`,
     };
   }
   return {
