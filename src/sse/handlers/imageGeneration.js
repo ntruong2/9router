@@ -16,6 +16,7 @@ import { updateProviderCredentials, checkAndRefreshToken } from "../services/tok
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
+import { releaseAfterEventStream } from "@/shared/services/sessionLoad.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
@@ -388,6 +389,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     }
 
     if (result.success) {
+      if (result.response?.headers?.get("content-type")?.includes("text/event-stream")) {
+        return releaseAfterEventStream(result.response, credentials.releaseImageSlot, signal);
+      }
       credentials.releaseImageSlot?.();
       return result.response;
     }
