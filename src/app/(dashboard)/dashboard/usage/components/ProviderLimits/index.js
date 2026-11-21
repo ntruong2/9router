@@ -578,10 +578,13 @@ export default function ProviderLimits() {
 
       const targets = visibleConnections.filter(shouldFetch);
       setLoading(buildLoadingState(targets));
-      await Promise.all(targets.map((conn) => fetchQuota(conn.id, conn.provider, { force, silent: true })));
-      setLoading((prev) => Object.fromEntries(
-        Object.entries(filterQuotaStateByConnections(prev, visibleConnections)).map(([id]) => [id, false]),
-      ));
+      try {
+        await Promise.all(targets.map((conn) => fetchQuota(conn.id, conn.provider, { force, silent: true })));
+      } finally {
+        setLoading((prev) => Object.fromEntries(
+          Object.entries(filterQuotaStateByConnections(prev, visibleConnections)).map(([id]) => [id, false]),
+        ));
+      }
 
       setLastUpdated(new Date());
     } catch (error) {
@@ -606,9 +609,15 @@ export default function ProviderLimits() {
         filterQuotaStateByConnections(prev, visibleConnections),
       );
 
-      await Promise.all(
-        visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider, { silent: true })),
-      );
+      try {
+        await Promise.all(
+          visibleConnections.map((conn) => fetchQuota(conn.id, conn.provider, { silent: true })),
+        );
+      } finally {
+        setLoading((prev) => Object.fromEntries(
+          Object.entries(filterQuotaStateByConnections(prev, visibleConnections)).map(([id]) => [id, false]),
+        ));
+      }
       setLastUpdated(new Date());
     };
 
