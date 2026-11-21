@@ -37,6 +37,7 @@ export async function handleImageGenerationCore({
   onCredentialsRefreshed,
   onRequestSuccess,
   onUsage,
+  signal,
 }) {
   const { provider, model } = modelInfo;
 
@@ -55,7 +56,7 @@ export async function handleImageGenerationCore({
   // Executor-delegating adapters: skip manual URL/headers/body, use the proven executor flow
   if (adapter.useExecutor && adapter.executeViaExecutor) {
     log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
-    const execPromise = adapter.executeViaExecutor(model, body, credentials, log);
+    const execPromise = adapter.executeViaExecutor(model, body, credentials, log, signal);
     execPromise.catch(() => {});
 
     // Streaming clients: if the executor is still running after 10s, open SSE and send
@@ -171,6 +172,7 @@ export async function handleImageGenerationCore({
       method: "POST",
       headers,
       body: serializeRequestBody(requestBody),
+      signal,
     });
 
     // Handle 401/403 — try token refresh (skipped for noAuth providers)
@@ -199,6 +201,7 @@ export async function handleImageGenerationCore({
             method: "POST",
             headers: retryHeaders,
             body: serializeRequestBody(retryBody),
+            signal,
           });
         } catch {
           log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
@@ -304,6 +307,7 @@ export async function handleImageGenerationCore({
           method: "POST",
           headers: fallbackHeaders,
           body: serializeRequestBody(fallbackBody),
+          signal,
         });
         requestBody = fallbackBody;
         headers = fallbackHeaders;

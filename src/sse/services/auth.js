@@ -178,7 +178,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const settings = await getSettings();
     const pinConfigured = isSessionPinEnabled(settings, providerId);
     const sessionPinEnabled = options.sessionId && pinConfigured;
-    const balanceLoad = options.reserveChatSlot === true && pinConfigured;
+    const balanceLoad = options.reserveChatSlot === true;
     const balanceImageLoad = options.reserveImageSlot === true;
     const pinnedSessionId = sessionPinEnabled ? getPinnedConnectionId(sessionPins, providerId, options.sessionId) : null;
     if (options.paidFallback && settings.paidFallback?.enabled === true) {

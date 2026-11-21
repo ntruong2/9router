@@ -72,7 +72,7 @@ export async function PATCH(request) {
         return NextResponse.json({ error: `${key} must map provider IDs to ${description}` }, { status: 400 });
       }
     }
-    for (const [key, min, max] of [["imageQueueMaxSize", 1, 500], ["imageQueueTimeoutMs", 1000, 300000]]) {
+    for (const [key, min, max] of [["imageQueueMaxSize", 1, 500], ["imageQueueTimeoutMs", 1000, 300000], ["imageJobTimeoutMs", 10000, 3600000]]) {
       if (Object.hasOwn(body, key) && (!Number.isInteger(body[key]) || body[key] < min || body[key] > max)) {
         return NextResponse.json({ error: `${key} must be between ${min} and ${max}` }, { status: 400 });
       }

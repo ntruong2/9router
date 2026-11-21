@@ -104,14 +104,14 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs }),
+        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs }),
         log,
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
       });
     }
-    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs });
+    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs });
   };
 
   let responsePromise = run();
@@ -280,7 +280,7 @@ function buildEditBody(body, provider, model) {
   return { body: images.length === 1 ? { ...rest, image: images[0] } : { ...rest, images } };
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit, signal, queueTimeoutMs } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit, signal, queueTimeoutMs, jobTimeoutMs } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -349,6 +349,10 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     }
 
     let result;
+    const timeoutController = new AbortController();
+    const timeoutMs = jobTimeoutMs || 10 * 60_000;
+    const combinedSignal = signal ? AbortSignal.any([signal, timeoutController.signal]) : timeoutController.signal;
+    const timeout = setTimeout(() => timeoutController.abort(new Error("Image generation timeout")), timeoutMs);
     try {
       result = await handleImageGenerationCore({
       body,
@@ -356,6 +360,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       credentials: refreshedCredentials,
       streamToClient: wantsStream,
       binaryOutput,
+      signal: combinedSignal,
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           accessToken: newCreds.accessToken,
@@ -386,6 +391,8 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     } catch (error) {
       credentials.releaseImageSlot?.({ error: true });
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
 
     if (result.success) {

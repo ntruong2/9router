@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   imageMaxConcurrent: {},
   imageQueueMaxSize: 50,
   imageQueueTimeoutMs: 30000,
+  imageJobTimeoutMs: 600000,
   codexSessionPin: false,
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
