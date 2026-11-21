@@ -17,8 +17,8 @@ export const ACCOUNT_FILTER_OPTIONS = [
 ];
 export const QUOTA_SORT_OPTIONS = [
   { value: "default", label: "Default quota order" },
-  { value: "remaining-asc", label: "% quota: low to high" },
-  { value: "remaining-desc", label: "% quota: high to low" },
+  { value: "remaining-asc", label: "Quota: low to high" },
+  { value: "remaining-desc", label: "Quota: high to low" },
 ];
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ export function sortVisibleConnections(
   providerFilter,
   quotaSortMode,
 ) {
-  if (providerFilter === "codex" && quotaSortMode !== "default") {
+  if (quotaSortMode !== "default") {
     return [...connections].sort((a, b) => {
       const remainingA = getConnectionQuotaRemaining(a, quotaData);
       const remainingB = getConnectionQuotaRemaining(b, quotaData);
@@ -63,9 +63,8 @@ export function sortVisibleConnections(
           ? remainingA - remainingB
           : remainingB - remainingA;
       if (remainingDiff !== 0) return remainingDiff;
-      return (getConnectionLabel(a) || "").localeCompare(
-        getConnectionLabel(b) || "",
-      );
+      return (a.provider || "").localeCompare(b.provider || "")
+        || (getConnectionLabel(a) || "").localeCompare(getConnectionLabel(b) || "");
     });
   }
 
