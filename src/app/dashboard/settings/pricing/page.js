@@ -9,11 +9,11 @@ export default function PricingSettingsPage() {
   const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [currentPricing, setCurrentPricing] = useState(null);
+  const [pricingMeta, setPricingMeta] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadPricing();
-  }, []);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncError, setSyncError] = useState("");
 
   const loadPricing = async () => {
     setLoading(true);
@@ -29,6 +29,43 @@ export default function PricingSettingsPage() {
       setLoading(false);
     }
   };
+
+  const loadPricingMeta = async () => {
+    try {
+      const response = await fetch("/api/pricing/meta");
+      if (response.ok) setPricingMeta(await response.json());
+    } catch (error) {
+      console.error("Failed to load pricing metadata:", error);
+    }
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadPricing();
+    loadPricingMeta();
+  }, []);
+
+  const syncPricing = async () => {
+    setSyncing(true);
+    setSyncMessage("");
+    setSyncError("");
+    try {
+      const response = await fetch("/api/pricing/sync", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Sync failed");
+      setSyncMessage(`Đã đồng bộ ${data.modelCount} model OpenRouter`);
+      await Promise.all([loadPricing(), loadPricingMeta()]);
+    } catch (error) {
+      setSyncError(error.message || "Không thể đồng bộ giá");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const lastSyncedAt = pricingMeta?.providers?.openrouter?.syncedAt;
+  const formattedLastSyncedAt = lastSyncedAt
+    ? new Intl.DateTimeFormat("vi-VN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(lastSyncedAt))
+    : "Chưa đồng bộ";
 
   const handlePricingUpdated = () => {
     loadPricing();
@@ -60,13 +97,33 @@ export default function PricingSettingsPage() {
             Configure pricing rates for cost tracking and calculations
           </p>
         </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="px-4 py-2 bg-primary text-white rounded hover:bg-primary/90 transition-colors"
-        >
-          Edit Pricing
-        </button>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <button
+            onClick={syncPricing}
+            disabled={syncing}
+            className="px-4 py-2 border border-border rounded hover:bg-bg-hover transition-colors disabled:opacity-50"
+          >
+            {syncing ? "Syncing..." : "Sync now"}
+          </button>
+          <button
+            onClick={() => setShowModal(true)}
+            className="px-4 py-2 bg-primary text-white rounded hover:bg-primary/90 transition-colors"
+          >
+            Edit Pricing
+          </button>
+        </div>
       </div>
+
+      <Card className="p-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-text-muted text-sm">OpenRouter pricing</div>
+          <div className="font-medium">Đồng bộ lần cuối: {formattedLastSyncedAt}</div>
+        </div>
+        <div className="text-sm" aria-live="polite">
+          {syncMessage && <span className="text-success">{syncMessage}</span>}
+          {syncError && <span className="text-error">{syncError}</span>}
+        </div>
+      </Card>
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

@@ -10,12 +10,6 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   const [newProvider, setNewProvider] = useState("");
   const [newModel, setNewModel] = useState("");
 
-  useEffect(() => {
-    if (isOpen) {
-      loadPricing();
-    }
-  }, [isOpen]);
-
   const loadPricing = async () => {
     setLoading(true);
     try {
@@ -36,6 +30,12 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    // Loading starts only when the modal becomes visible.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (isOpen) loadPricing();
+  }, [isOpen]);
 
   const handlePricingChange = (provider, model, field, value) => {
     const numValue = parseFloat(value);

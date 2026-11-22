@@ -1,6 +1,7 @@
 import { makeKv } from "@/lib/db/helpers/kvStore.js";
 
 const autoPricingKv = makeKv("pricingAuto");
+const AUTO_PRICING_META_KEY = "_meta";
 export const OPENAI_PRICING_URL = "https://openai.com/api/pricing/";
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
@@ -36,6 +37,8 @@ export async function syncOpenAiPricing(fetchImpl = fetch) {
   if (!Object.keys(parsed).length) throw new Error("OpenAI pricing page had no recognized prices");
   await autoPricingKv.set("openai", parsed);
   await autoPricingKv.set("codex", parsed);
+  await updateAutomaticPricingMeta("openai", Object.keys(parsed).length);
+  await updateAutomaticPricingMeta("codex", Object.keys(parsed).length);
   return parsed;
 }
 
@@ -58,5 +61,21 @@ export async function syncOpenRouterPricing(fetchImpl = fetch) {
   const parsed = parseOpenRouterModels(await response.json());
   if (!Object.keys(parsed).length) throw new Error("OpenRouter returned no model prices");
   await autoPricingKv.set("openrouter", parsed);
+  await updateAutomaticPricingMeta("openrouter", Object.keys(parsed).length);
   return parsed;
+}
+
+async function updateAutomaticPricingMeta(provider, modelCount) {
+  const current = await autoPricingKv.get(AUTO_PRICING_META_KEY, {});
+  await autoPricingKv.set(AUTO_PRICING_META_KEY, {
+    ...current,
+    [provider]: {
+      syncedAt: new Date().toISOString(),
+      modelCount,
+    },
+  });
+}
+
+export async function getAutomaticPricingMeta() {
+  return autoPricingKv.get(AUTO_PRICING_META_KEY, {});
 }

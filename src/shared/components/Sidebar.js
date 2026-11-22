@@ -36,6 +36,7 @@ const debugItems = [
 
 const systemItems = [
   { href: "/dashboard/proxy-pools", label: "Proxy Pools", icon: "lan" },
+  { href: "/dashboard/settings/pricing", label: "Pricing", icon: "payments" },
   { href: "/dashboard/skills", label: "Skills", icon: "extension" },
 ];
 

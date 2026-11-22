@@ -46,6 +46,12 @@ export async function getPricing() {
     }
   }
 
+  // Include automatically synced providers that are not part of the built-in catalog.
+  for (const [provider, models] of Object.entries(automaticPricing)) {
+    if (provider === "_meta") continue;
+    if (!merged[provider]) merged[provider] = { ...models };
+  }
+
   cache = { value: merged, expiresAt: now + CACHE_TTL_MS };
   return merged;
 }
