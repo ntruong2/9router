@@ -38,6 +38,15 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
     if (isOpen) loadPricing();
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   const handlePricingChange = (provider, model, field, value) => {
     const numValue = parseFloat(value);
     if (isNaN(numValue) || numValue < 0) return;
@@ -115,8 +124,8 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   const pricingFields = ["input", "output", "cached", "reasoning", "cache_creation"];
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-bg-base border border-border rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/60 p-0 backdrop-blur-sm sm:items-center sm:p-4" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="flex max-h-[calc(100dvh-0.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-t-2xl border border-border bg-surface shadow-2xl sm:max-h-[90vh] sm:rounded-2xl" onMouseDown={(event) => event.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border bg-bg-base/95 p-4 backdrop-blur">
           <div>
@@ -133,7 +142,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-auto p-4">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3 sm:p-4">
           {loading ? (
             <div className="text-center py-8 text-text-muted">Loading pricing data...</div>
           ) : (
@@ -230,7 +239,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-border flex items-center justify-between gap-2">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border bg-surface p-3 sm:p-4">
           <button
             onClick={handleReset}
             className="px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded border border-red-500/20 transition-colors"
