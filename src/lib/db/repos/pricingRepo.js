@@ -8,6 +8,21 @@ const CACHE_TTL_MS = 5000;
 
 let cache = { value: null, expiresAt: 0 };
 
+// Synced rows are external data: drop negative rates (OpenRouter's -1 dynamic-price sentinel,
+// including rows stored before the sync filtered them) so costs can never go negative.
+function dropNegativeRates(automaticPricing) {
+  const out = {};
+  for (const [provider, models] of Object.entries(automaticPricing || {})) {
+    if (provider === "_meta" || !models || typeof models !== "object") {
+      out[provider] = models;
+      continue;
+    }
+    out[provider] = Object.fromEntries(Object.entries(models).filter(([, rate]) =>
+      !["input", "output", "cached", "reasoning", "cache_creation"].some((field) => Number(rate?.[field]) < 0)));
+  }
+  return out;
+}
+
 function withOpenRouterAliases(automaticPricing) {
   const openRouter = automaticPricing.openrouter || {};
   if (!Object.keys(openRouter).length) return automaticPricing;
@@ -43,7 +58,7 @@ export async function getPricing() {
   if (cache.value && cache.expiresAt > now) return cache.value;
 
   const userPricing = await getUserPricing();
-  const automaticPricing = withOpenRouterAliases(await pricingAutoKv.getAll());
+  const automaticPricing = withOpenRouterAliases(dropNegativeRates(await pricingAutoKv.getAll()));
   const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
   const merged = {};
 
@@ -82,7 +97,7 @@ export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
   if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
-  const automaticPricing = withOpenRouterAliases(await pricingAutoKv.getAll());
+  const automaticPricing = withOpenRouterAliases(dropNegativeRates(await pricingAutoKv.getAll()));
   if (provider && automaticPricing[provider]?.[model]) return automaticPricing[provider][model];
   const openRouterModel = provider ? `${provider}/${model}` : model;
   if (automaticPricing.openrouter?.[openRouterModel]) return automaticPricing.openrouter[openRouterModel];
