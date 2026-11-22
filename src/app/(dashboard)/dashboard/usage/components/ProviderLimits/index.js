@@ -1110,43 +1110,6 @@ export default function ProviderLimits() {
   const isCustomPageSize = !ACCOUNT_PAGE_SIZE_OPTIONS.includes(pageSize);
   const pageSizeLabel = getPageSizeLabel(pageSize, isCustomPageSize);
 
-  if (!connectionsLoading && !hasEligibleConnections) {
-    return (
-      <Card padding="lg">
-        <div className="text-center py-12">
-          <span className="material-symbols-outlined text-[64px] text-text-muted opacity-20">
-            cloud_off
-          </span>
-          <h3 className="mt-4 text-lg font-semibold text-text-primary">
-            No Providers Connected
-          </h3>
-          <p className="mt-2 text-sm text-text-muted max-w-md mx-auto">
-            Connect to providers with OAuth to track your API quota limits and
-            usage.
-          </p>
-        </div>
-      </Card>
-    );
-  }
-
-  if (!connectionsLoading && !hasVisibleConnections) {
-    return (
-      <Card padding="lg">
-        <div className="text-center py-12">
-          <span className="material-symbols-outlined text-[64px] text-text-muted opacity-20">
-            {emptyState.icon}
-          </span>
-          <h3 className="mt-4 text-lg font-semibold text-text-primary">
-            {emptyState.title}
-          </h3>
-          <p className="mt-2 text-sm text-text-muted max-w-md mx-auto">
-            {emptyState.description}
-          </p>
-        </div>
-      </Card>
-    );
-  }
-
   return (
     <div className="space-y-6">
       {/* Header Controls */}
@@ -1444,6 +1407,24 @@ export default function ProviderLimits() {
             Smart Use recommends <strong>{getConnectionLabel(recommendedConnection) || providerLabel(recommendedConnection.provider)}</strong> based on fresh quota and reset time.
           </span>
         </div>
+      )}
+
+      {!connectionsLoading && !hasVisibleConnections && (
+        <Card padding="lg">
+          <div className="text-center py-12">
+            <span className="material-symbols-outlined text-[64px] text-text-muted opacity-20">
+              {emptyState.icon}
+            </span>
+            <h3 className="mt-4 text-lg font-semibold text-text-primary">
+              {!hasEligibleConnections ? "No Providers Connected" : emptyState.title}
+            </h3>
+            <p className="mt-2 text-sm text-text-muted max-w-md mx-auto">
+              {!hasEligibleConnections
+                ? "Connect to providers with OAuth to track your API quota limits and usage."
+                : emptyState.description}
+            </p>
+          </div>
+        </Card>
       )}
 
       {/* Provider cards: 2 columns, compact */}

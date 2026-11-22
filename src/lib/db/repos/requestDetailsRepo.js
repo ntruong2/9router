@@ -180,22 +180,50 @@ export async function getRequestDetails(filter = {}) {
   const totalPages = Math.ceil(totalItems / pageSize);
   const offset = (page - 1) * pageSize;
 
-  const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset]
+  if (totalItems > 0) {
+    const rows = db.all(
+      `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+      [...params, pageSize, offset]
+    );
+    return {
+      details: rows.map((r) => parseJson(r.data, {})),
+      pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+    };
+  }
+
+  // Observability may be disabled while aggregate usage history is still recorded.
+  // Fall back to that history so the details tab can show useful request metadata.
+  const historyWhere = where;
+  const historyParams = params;
+  const historyCount = db.get(`SELECT COUNT(*) as c FROM usageHistory ${historyWhere}`, historyParams)?.c || 0;
+  const historyTotalPages = Math.ceil(historyCount / pageSize);
+  const historyRows = db.all(
+    `SELECT id, timestamp, provider, model, connectionId, status, tokens FROM usageHistory ${historyWhere} ORDER BY id DESC LIMIT ? OFFSET ?`,
+    [...historyParams, pageSize, offset],
   );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  const historyDetails = historyRows.map((row) => ({
+    id: `usage-${row.id}`,
+    timestamp: row.timestamp,
+    provider: row.provider,
+    model: row.model,
+    connectionId: row.connectionId,
+    status: row.status,
+    tokens: parseJson(row.tokens, {}),
+    latency: {},
+    source: "usageHistory",
+  }));
 
   return {
-    details,
-    pagination: { page, pageSize, totalItems, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+    details: historyDetails,
+    pagination: { page, pageSize, totalItems: historyCount, totalPages: historyTotalPages, hasNext: page < historyTotalPages, hasPrev: page > 1 },
   };
 }
 
 export async function getDistinctProviders() {
   const db = await getAdapter();
   const rows = db.all(`SELECT DISTINCT provider FROM requestDetails WHERE provider IS NOT NULL ORDER BY provider ASC`);
-  return rows.map((r) => r.provider);
+  if (rows.length) return rows.map((r) => r.provider);
+  return db.all(`SELECT DISTINCT provider FROM usageHistory WHERE provider IS NOT NULL ORDER BY provider ASC`).map((r) => r.provider);
 }
 
 export async function getRequestDetailById(id) {
