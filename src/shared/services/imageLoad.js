@@ -15,7 +15,10 @@ export function getImageLoad(state, connectionId) {
 export function reserveImageSlot(state, connectionId, { maxConcurrent = DEFAULT_IMAGE_CONCURRENT } = {}) {
   if (!connectionId) return null;
   const entry = state.accounts.get(connectionId) || { running: 0, maxConcurrent };
-  entry.maxConcurrent = Math.max(1, Math.min(MAX_IMAGE_CONCURRENT, Number(maxConcurrent) || DEFAULT_IMAGE_CONCURRENT));
+  // Infinity = track load without a cap (no limit configured for the provider).
+  entry.maxConcurrent = maxConcurrent === Infinity
+    ? Infinity
+    : Math.max(1, Math.min(MAX_IMAGE_CONCURRENT, Number(maxConcurrent) || DEFAULT_IMAGE_CONCURRENT));
   if (entry.running >= entry.maxConcurrent) return null;
   entry.running += 1;
   state.accounts.set(connectionId, entry);

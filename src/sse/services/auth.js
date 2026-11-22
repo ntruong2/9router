@@ -183,13 +183,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const settings = await getSettings();
     const pinConfigured = isSessionPinEnabled(settings, providerId);
     const sessionPinEnabled = options.sessionId && pinConfigured;
-    // Concurrency caps are opt-in per provider: without a configured limit, requests are not
-    // queued or rejected (an implicit default cap turned parallel agents into 503s).
+    // Smart load: in-flight requests are always tracked so the least-loaded account is preferred,
+    // but a hard cap (queue, then 503) applies only when the provider has a configured limit.
+    // An implicit default cap turned parallel agents and image batches into 503s.
     const chatRequest = options.reserveChatSlot === true;
-    const chatLimit = configuredLimit(settings.sessionMaxConcurrent, providerId);
-    const imageLimit = configuredLimit(settings.imageMaxConcurrent, providerId);
-    const balanceLoad = chatRequest && chatLimit !== null;
-    const balanceImageLoad = options.reserveImageSlot === true && imageLimit !== null;
+    const chatLimit = configuredLimit(settings.sessionMaxConcurrent, providerId) ?? Infinity;
+    const imageLimit = configuredLimit(settings.imageMaxConcurrent, providerId) ?? Infinity;
+    const balanceLoad = chatRequest;
+    const balanceImageLoad = options.reserveImageSlot === true;
     const pinnedSessionId = sessionPinEnabled ? getPinnedConnectionId(sessionPins, providerId, options.sessionId) : null;
     if (options.paidFallback && settings.paidFallback?.enabled === true) {
       let denial;

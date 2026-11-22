@@ -507,12 +507,24 @@ describe("Antigravity quota-aware routing", () => {
   it("does not cap chat or image concurrency unless a per-provider limit is configured", async () => {
     mocks.getSettings.mockResolvedValue({});
     mocks.getProviderConnections.mockResolvedValue([{ id: "solo", isActive: true }]);
-    const chat = await Promise.all([1, 2, 3].map(() => getProviderCredentials("openrouter", null, "m", { reserveChatSlot: true })));
-    expect(chat.map((c) => c.connectionId)).toEqual(["solo", "solo", "solo"]);
-    expect(chat.every((c) => c.releaseChatSlot === undefined && !c.waitForChatSlot)).toBe(true);
-    const image = await Promise.all([1, 2].map(() => getProviderCredentials("codex", null, "m", { reserveImageSlot: true })));
-    expect(image.map((c) => c.connectionId)).toEqual(["solo", "solo"]);
-    expect(image.every((c) => c.releaseImageSlot === undefined && !c.waitForImageSlot)).toBe(true);
+    const chat = await Promise.all([1, 2, 3, 4].map(() => getProviderCredentials("openrouter", null, "m", { reserveChatSlot: true })));
+    expect(chat.map((c) => c.connectionId)).toEqual(["solo", "solo", "solo", "solo"]);
+    expect(chat.every((c) => typeof c.releaseChatSlot === "function" && !c.waitForChatSlot)).toBe(true);
+    chat.forEach((c) => c.releaseChatSlot());
+    const image = await Promise.all([1, 2, 3].map(() => getProviderCredentials("codex", null, "m", { reserveImageSlot: true })));
+    expect(image.map((c) => c.connectionId)).toEqual(["solo", "solo", "solo"]);
+    expect(image.every((c) => typeof c.releaseImageSlot === "function" && !c.waitForImageSlot)).toBe(true);
+    image.forEach((c) => c.releaseImageSlot());
+  });
+
+  it("still prefers the least-loaded account for images when no limit is configured", async () => {
+    mocks.getSettings.mockResolvedValue({});
+    mocks.getProviderConnections.mockResolvedValue([{ id: "img-a", isActive: true }, { id: "img-b", isActive: true }]);
+    const first = await getProviderCredentials("codex", null, "m", { reserveImageSlot: true });
+    const second = await getProviderCredentials("codex", null, "m", { reserveImageSlot: true });
+    expect(new Set([first.connectionId, second.connectionId])).toEqual(new Set(["img-a", "img-b"]));
+    first.releaseImageSlot();
+    second.releaseImageSlot();
   });
 
   it("queues chat and image requests once a per-provider limit is configured", async () => {
