@@ -55,12 +55,43 @@ export function parseOpenRouterModels(body) {
   }));
 }
 
+export function buildOpenAiAliases(openRouterPricing) {
+  const aliases = {};
+  for (const [modelId, pricing] of Object.entries(openRouterPricing)) {
+    if (!modelId.startsWith("openai/")) continue;
+    const model = modelId.slice("openai/".length);
+    if (!model || model.includes(":")) continue;
+    aliases[model] = { ...pricing, source: "openrouter-alias" };
+  }
+  return aliases;
+}
+
+export function buildProviderAliases(openRouterPricing) {
+  const aliases = {};
+  const namespaceMap = { openai: ["openai", "codex"], anthropic: ["anthropic", "claude"], google: ["google", "gemini"] };
+  for (const [modelId, pricing] of Object.entries(openRouterPricing)) {
+    const separator = modelId.indexOf("/");
+    if (separator <= 0 || modelId.includes(":")) continue;
+    const namespace = modelId.slice(0, separator);
+    const model = modelId.slice(separator + 1);
+    for (const provider of namespaceMap[namespace] || [namespace]) {
+      (aliases[provider] ||= {})[model] = { ...pricing, source: "openrouter-alias" };
+    }
+  }
+  return aliases;
+}
+
 export async function syncOpenRouterPricing(fetchImpl = fetch) {
   const response = await fetchImpl(OPENROUTER_MODELS_URL, { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(`OpenRouter models returned HTTP ${response.status}`);
   const parsed = parseOpenRouterModels(await response.json());
   if (!Object.keys(parsed).length) throw new Error("OpenRouter returned no model prices");
   await autoPricingKv.set("openrouter", parsed);
+  const providerAliases = buildProviderAliases(parsed);
+  for (const [provider, aliases] of Object.entries(providerAliases)) {
+    await autoPricingKv.set(provider, aliases);
+    await updateAutomaticPricingMeta(provider, Object.keys(aliases).length);
+  }
   await updateAutomaticPricingMeta("openrouter", Object.keys(parsed).length);
   return parsed;
 }

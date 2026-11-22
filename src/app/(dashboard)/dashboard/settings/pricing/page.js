@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Card from "@/shared/components/Card";
+import { Card, Button } from "@/shared/components";
 import PricingModal from "@/shared/components/PricingModal";
 
 export default function PricingSettingsPage() {
@@ -90,39 +90,34 @@ export default function PricingSettingsPage() {
   const syncedModelCount = pricingMeta?.providers?.openrouter?.modelCount || 0;
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-4 py-5 sm:px-6 lg:py-8">
-      <section className="relative overflow-hidden rounded-3xl border border-brand-500/20 bg-gradient-to-br from-brand-500/15 via-surface to-surface p-5 shadow-[var(--shadow-soft)] sm:p-7">
-        <div className="pointer-events-none absolute -right-16 -top-20 size-56 rounded-full bg-brand-500/15 blur-3xl" />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-2xl">
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-brand-500/20 bg-brand-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-300">
-              <span className="material-symbols-outlined text-[15px]">payments</span>
-              Cost intelligence
-            </div>
-            <h1 className="text-3xl font-semibold tracking-tight text-text-main sm:text-4xl">Model pricing</h1>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-text-muted sm:text-base">
-              Keep token costs accurate across providers with automatic catalog updates and manual overrides.
-            </p>
+    <div className="mx-auto max-w-7xl space-y-6">
+      <Card padding="md">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-text-muted">Model pricing</p>
+            <h2 className="mt-1 text-xl font-semibold text-text-main">Keep token costs accurate</h2>
+            <p className="mt-1 max-w-2xl text-sm text-text-muted">Automatic catalog updates with manual overrides for custom models.</p>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-            <button
+            <Button
+              variant="outline"
+              size="md"
               onClick={syncPricing}
               disabled={syncing}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-border bg-surface/80 px-4 text-sm font-medium text-text-main transition hover:border-brand-500/40 hover:bg-surface-2 disabled:cursor-wait disabled:opacity-60"
-            >
-              <span className={`material-symbols-outlined text-[18px] ${syncing ? "animate-spin" : ""}`}>sync</span>
-              {syncing ? "Syncing catalog" : "Sync now"}
-            </button>
-            <button
+              loading={syncing}
+              icon="sync"
+              className="w-full sm:w-auto"
+            >{syncing ? "Syncing catalog" : "Sync now"}</Button>
+            <Button
+              variant="primary"
+              size="md"
               onClick={() => setShowModal(true)}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700"
-            >
-              <span className="material-symbols-outlined text-[18px]">tune</span>
-              Edit pricing
-            </button>
+              icon="tune"
+              className="w-full sm:w-auto"
+            >Edit pricing</Button>
           </div>
         </div>
-        <div className="relative mt-6 flex flex-col gap-3 border-t border-black/10 pt-4 text-sm dark:border-white/10 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-5 flex flex-col gap-2 border-t border-border-subtle pt-4 text-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 text-text-muted">
             <span className="size-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px] shadow-emerald-500/10" />
             <span>OpenRouter catalog</span>
@@ -131,11 +126,11 @@ export default function PricingSettingsPage() {
           <div className="text-text-muted">Last synced <span className="font-medium text-text-main">{formattedLastSyncedAt}</span></div>
         </div>
         {(syncMessage || syncError) && (
-          <div aria-live="polite" className={`relative mt-3 rounded-xl border px-3 py-2 text-sm ${syncError ? "border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-300" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"}`}>
+          <div aria-live="polite" className={`mt-3 rounded-lg border px-3 py-2 text-sm ${syncError ? "border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-300" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"}`}>
             {syncError || syncMessage}
           </div>
         )}
-      </section>
+      </Card>
 
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         {[

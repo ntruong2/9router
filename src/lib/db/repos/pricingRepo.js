@@ -8,6 +8,27 @@ const CACHE_TTL_MS = 5000;
 
 let cache = { value: null, expiresAt: 0 };
 
+function withOpenRouterAliases(automaticPricing) {
+  const openRouter = automaticPricing.openrouter || {};
+  if (!Object.keys(openRouter).length) return automaticPricing;
+
+  const namespaceMap = { openai: ["openai", "codex"], anthropic: ["anthropic", "claude"], google: ["google", "gemini"] };
+  const aliases = {};
+  for (const [modelId, pricing] of Object.entries(openRouter)) {
+    const separator = modelId.indexOf("/");
+    if (separator <= 0 || modelId.includes(":")) continue;
+    const namespace = modelId.slice(0, separator);
+    const model = modelId.slice(separator + 1);
+    for (const provider of namespaceMap[namespace] || [namespace]) {
+      (aliases[provider] ||= {})[model] = { ...pricing, source: "openrouter-alias" };
+    }
+  }
+  return Object.fromEntries(Object.entries(aliases).map(([provider, models]) => [
+    provider,
+    { ...models, ...(automaticPricing[provider] || {}) },
+  ]).concat(Object.entries(automaticPricing).filter(([provider]) => !aliases[provider])));
+}
+
 function invalidate() {
   cache = { value: null, expiresAt: 0 };
 }
@@ -21,7 +42,7 @@ export async function getPricing() {
   if (cache.value && cache.expiresAt > now) return cache.value;
 
   const userPricing = await getUserPricing();
-  const automaticPricing = await pricingAutoKv.getAll();
+  const automaticPricing = withOpenRouterAliases(await pricingAutoKv.getAll());
   const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
   const merged = {};
 
@@ -60,8 +81,10 @@ export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
   if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
-  const automaticPricing = await pricingAutoKv.getAll();
+  const automaticPricing = withOpenRouterAliases(await pricingAutoKv.getAll());
   if (provider && automaticPricing[provider]?.[model]) return automaticPricing[provider][model];
+  const openRouterModel = provider ? `${provider}/${model}` : model;
+  if (automaticPricing.openrouter?.[openRouterModel]) return automaticPricing.openrouter[openRouterModel];
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   return resolveConst(provider, model);
 }

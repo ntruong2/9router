@@ -134,6 +134,13 @@ const getPageInfo = (pathname) => {
       icon: "lan",
       breadcrumbs: [],
     };
+  if (pathname.includes("/settings/pricing"))
+    return {
+      title: "Pricing",
+      description: "Manage model pricing and token cost rates",
+      icon: "payments",
+      breadcrumbs: [],
+    };
   if (pathname.includes("/skills"))
     return {
       title: "Agent Skills",
