@@ -7,6 +7,8 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   const [pricingData, setPricingData] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [newProvider, setNewProvider] = useState("");
+  const [newModel, setNewModel] = useState("");
 
   useEffect(() => {
     if (isOpen) {
@@ -46,6 +48,20 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
       newData[provider][model][field] = numValue;
       return newData;
     });
+  };
+
+  const addCustomModel = () => {
+    const provider = newProvider.trim().toLowerCase();
+    const model = newModel.trim();
+    if (!provider || !model) return;
+    setPricingData((prev) => ({
+      ...prev,
+      [provider]: {
+        ...(prev[provider] || {}),
+        [model]: prev[provider]?.[model] || { input: 0, output: 0, cached: 0, reasoning: 0, cache_creation: 0 },
+      },
+    }));
+    setNewModel("");
   };
 
   const handleSave = async () => {
@@ -120,6 +136,20 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
                   All rates are in <strong>dollars per million tokens</strong> ($/1M tokens).
                   Example: Input rate of 2.50 means $2.50 per 1,000,000 input tokens.
                 </p>
+              </div>
+
+              <div className="flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:flex-row sm:items-end">
+                <label className="flex-1 text-xs text-text-muted">
+                  Provider
+                  <input value={newProvider} onChange={(e) => setNewProvider(e.target.value)} placeholder="openai" className="mt-1 w-full rounded border border-border bg-bg-base px-2 py-1.5 text-sm text-text-primary" />
+                </label>
+                <label className="flex-[2] text-xs text-text-muted">
+                  Custom model ID
+                  <input value={newModel} onChange={(e) => setNewModel(e.target.value)} placeholder="gpt-6.2-sol" className="mt-1 w-full rounded border border-border bg-bg-base px-2 py-1.5 text-sm text-text-primary" />
+                </label>
+                <button type="button" onClick={addCustomModel} disabled={!newProvider.trim() || !newModel.trim()} className="rounded bg-primary px-3 py-1.5 text-sm text-white disabled:opacity-50">
+                  Add custom model
+                </button>
               </div>
 
               {/* Pricing Tables */}

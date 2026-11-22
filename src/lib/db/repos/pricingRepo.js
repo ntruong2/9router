@@ -3,6 +3,7 @@ import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { makeKv } from "../helpers/kvStore.js";
 
 const pricingKv = makeKv("pricing");
+const pricingAutoKv = makeKv("pricingAuto");
 const CACHE_TTL_MS = 5000;
 
 let cache = { value: null, expiresAt: 0 };
@@ -20,11 +21,12 @@ export async function getPricing() {
   if (cache.value && cache.expiresAt > now) return cache.value;
 
   const userPricing = await getUserPricing();
+  const automaticPricing = await pricingAutoKv.getAll();
   const { PROVIDER_PRICING } = await import("open-sse/providers/pricing.js");
   const merged = {};
 
   for (const [provider, models] of Object.entries(PROVIDER_PRICING)) {
-    merged[provider] = { ...models };
+    merged[provider] = { ...(automaticPricing[provider] || {}), ...models };
     if (userPricing[provider]) {
       for (const [model, pricing] of Object.entries(userPricing[provider])) {
         merged[provider][model] = merged[provider][model]
@@ -36,7 +38,7 @@ export async function getPricing() {
 
   for (const [provider, models] of Object.entries(userPricing)) {
     if (!merged[provider]) {
-      merged[provider] = { ...models };
+      merged[provider] = { ...(automaticPricing[provider] || {}), ...models };
     } else {
       for (const [model, pricing] of Object.entries(models)) {
         if (!merged[provider][model]) merged[provider][model] = pricing;
@@ -52,6 +54,8 @@ export async function getPricingForModel(provider, model) {
   if (!model) return null;
   const userPricing = await getUserPricing();
   if (provider && userPricing[provider]?.[model]) return userPricing[provider][model];
+  const automaticPricing = await pricingAutoKv.getAll();
+  if (provider && automaticPricing[provider]?.[model]) return automaticPricing[provider][model];
   const { getPricingForModel: resolveConst } = await import("open-sse/providers/pricing.js");
   return resolveConst(provider, model);
 }

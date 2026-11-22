@@ -170,6 +170,7 @@ export default function ProviderLimits() {
   const [scheduleConnection, setScheduleConnection] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [hasHydratedAutoRefresh, setHasHydratedAutoRefresh] = useState(false);
+  const [hasHydratedViewState, setHasHydratedViewState] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [countdown, setCountdown] = useState(60);
   const [connectionsLoading, setConnectionsLoading] = useState(true);
@@ -209,7 +210,7 @@ export default function ProviderLimits() {
   const [smartQuotaForecast, setSmartQuotaForecast] = useState(true);
   const [smartQuotaAlerts, setSmartQuotaAlerts] = useState(true);
   const [smartQuotaBackgroundRefresh, setSmartQuotaBackgroundRefresh] = useState(false);
-  const [codexSessionPin, setCodexSessionPin] = useState(true);
+  const [sessionPin, setSessionPin] = useState({});
   const [sessionMaxConcurrent, setSessionMaxConcurrent] = useState({});
   const [sessionLoadStatus, setSessionLoadStatus] = useState({});
   const [imageLoadStatus, setImageLoadStatus] = useState({});
@@ -236,6 +237,44 @@ export default function ProviderLimits() {
   const intervalRef = useRef(null);
   const countdownRef = useRef(null);
   const tickCountRef = useRef(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("quotaTrackerViewState") || "{}");
+      if (!searchParams?.get("provider") && typeof saved.providerFilter === "string") _setProviderFilter(saved.providerFilter);
+      if (["all", "active", "inactive", "quota-available", "quota-exhausted"].includes(saved.accountFilter)) setAccountFilter(saved.accountFilter);
+      if (["default", "remaining-asc", "remaining-desc"].includes(saved.quotaSortMode)) setQuotaSortMode(saved.quotaSortMode);
+      if (typeof saved.expiringFirst === "boolean") setExpiringFirst(saved.expiringFirst);
+      if (Number.isInteger(saved.pageSize) && saved.pageSize >= 1 && saved.pageSize <= ACCOUNT_PAGE_SIZE_MAX) {
+        setPageSize(saved.pageSize);
+        setCustomPageSizeInput(String(saved.pageSize));
+      }
+    } catch { /* ignore malformed browser preferences */ }
+    setHasHydratedViewState(true);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasHydratedViewState) return;
+    window.localStorage.setItem("quotaTrackerViewState", JSON.stringify({
+      providerFilter,
+      accountFilter,
+      quotaSortMode,
+      expiringFirst,
+      pageSize,
+    }));
+  }, [hasHydratedViewState, providerFilter, accountFilter, quotaSortMode, expiringFirst, pageSize]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem("quotaTrackerSortMode");
+    if (["default", "remaining-asc", "remaining-desc"].includes(saved)) setQuotaSortMode(saved);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("quotaTrackerSortMode", quotaSortMode);
+  }, [quotaSortMode]);
 
   const fetchConnections = useCallback(
     async (targetPage = page) => {
@@ -660,7 +699,7 @@ export default function ProviderLimits() {
         setSmartQuotaForecast(s?.smartQuotaForecast !== false);
         setSmartQuotaAlerts(s?.smartQuotaAlerts !== false);
         setSmartQuotaBackgroundRefresh(s?.smartQuotaBackgroundRefresh === true);
-        setCodexSessionPin(s?.sessionPin?.codex === true || (s?.sessionPin === undefined && s?.codexSessionPin === true));
+        setSessionPin({ ...(s?.sessionPin || {}), ...(s?.sessionPin?.codex === undefined && s?.codexSessionPin === true ? { codex: true } : {}) });
         setSessionMaxConcurrent(s?.sessionMaxConcurrent || {});
       })
       .catch(() => {});
@@ -745,21 +784,21 @@ export default function ProviderLimits() {
     }
   }, []);
 
-  const toggleCodexSessionPin = useCallback(async () => {
-    const next = !codexSessionPin;
-    setCodexSessionPin(next);
+  const toggleSessionPin = useCallback(async (provider) => {
+    const next = !(sessionPin[provider] === true);
+    setSessionPin((current) => ({ ...current, [provider]: next }));
     try {
       const response = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionPin: { codex: next } }),
+        body: JSON.stringify({ sessionPin: { [provider]: next } }),
       });
-      if (!response.ok) throw new Error("Failed to update Codex SessionPin");
+      if (!response.ok) throw new Error(`Failed to update ${provider} SessionPin`);
     } catch (error) {
-      console.error("Error updating Codex SessionPin:", error);
-      setCodexSessionPin(!next);
+      console.error(`Error updating ${provider} SessionPin:`, error);
+      setSessionPin((current) => ({ ...current, [provider]: !next }));
     }
-  }, [codexSessionPin]);
+  }, [sessionPin]);
 
   const updateSessionMaxConcurrent = useCallback(async (provider, value) => {
     const next = Math.max(1, Math.min(32, Number.parseInt(value, 10) || 2));
@@ -1308,13 +1347,13 @@ export default function ProviderLimits() {
             <span className="hidden sm:inline">Background</span>
           </button>
 
-          {providerFilter === "codex" && (
+          {providerFilter !== "all" && (
             <button
               type="button"
-              onClick={toggleCodexSessionPin}
-              aria-pressed={codexSessionPin}
-              className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${codexSessionPin ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300" : "border-black/10 text-text-primary dark:border-white/10"}`}
-              title="Keep each Codex session on one account until failover"
+              onClick={() => toggleSessionPin(providerFilter)}
+              aria-pressed={sessionPin[providerFilter] === true}
+              className={`flex h-8 shrink-0 items-center gap-1 rounded-lg border px-2 text-xs transition-colors ${sessionPin[providerFilter] === true ? "border-indigo-500/40 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300" : "border-black/10 text-text-primary dark:border-white/10"}`}
+              title={`Keep each ${providerLabel(providerFilter)} session on one account until failover`}
             >
               <span className="material-symbols-outlined text-[14px]">push_pin</span>
               <span className="hidden sm:inline">Pin Session</span>

@@ -47,6 +47,7 @@ const g = global.__appSingleton ??= {
   mitmStartInProgress: false,
   tunnelAutoResumed: false,
   tailscaleAutoResumed: false,
+  pricingSyncInterval: null,
 };
 
 export async function initializeApp() {
@@ -82,6 +83,12 @@ export async function initializeApp() {
 async function runHeavyStartup() {
   await cleanupProviderConnections();
   const settings = await getSettings();
+  import("@/shared/services/pricingSync.js").then(({ syncOpenRouterPricing }) => {
+    const sync = () => syncOpenRouterPricing().catch((error) => console.warn("[PricingSync] OpenRouter sync failed:", error.message));
+    sync();
+    if (!g.pricingSyncInterval) g.pricingSyncInterval = setInterval(sync, 24 * 60 * 60 * 1000);
+    g.pricingSyncInterval.unref?.();
+  }).catch(() => {});
 
   // Auto-resume tunnel (once per process)
   if (settings.tunnelEnabled && !g.tunnelAutoResumed) {
