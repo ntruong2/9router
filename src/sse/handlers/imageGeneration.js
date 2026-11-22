@@ -22,6 +22,7 @@ import { releaseAfterEventStream } from "@/shared/services/sessionLoad.js";
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
 const imageIdempotency = globalThis[Symbol.for("9router.imageIdempotency")] ||= new Map();
 const IMAGE_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
+const IMAGE_IDEMPOTENCY_MAX_ENTRIES = 200;
 
 function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
   if (!usage || typeof usage !== "object") return;
@@ -114,12 +115,18 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
     return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs });
   };
 
-  let responsePromise = run();
+  // Look the key up BEFORE starting work: a retried request must reuse the first run instead of
+  // calling the provider (and spending quota) again.
+  let responsePromise;
   if (idempotencyKey) {
     const cacheKey = `${apiKey || "local"}:${idempotencyKey}`;
     const existing = imageIdempotency.get(cacheKey);
     if (existing && existing.expiresAt > Date.now()) responsePromise = existing.promise.then((response) => response.clone());
     else {
+      if (existing) imageIdempotency.delete(cacheKey);
+      // Bound memory: entries hold a full image response, so evict the oldest beyond the cap.
+      while (imageIdempotency.size >= IMAGE_IDEMPOTENCY_MAX_ENTRIES) imageIdempotency.delete(imageIdempotency.keys().next().value);
+      responsePromise = run();
       const cachedPromise = responsePromise.then((response) => response.clone());
       imageIdempotency.set(cacheKey, { promise: cachedPromise, expiresAt: Date.now() + IMAGE_IDEMPOTENCY_TTL_MS });
       cachedPromise.finally(() => setTimeout(() => {
@@ -128,6 +135,7 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
       }, IMAGE_IDEMPOTENCY_TTL_MS)).catch(() => {});
     }
   }
+  responsePromise ??= run();
   if (openAiStream && !binaryOutput) return openAiSseFromResponse(responsePromise, "image_edit");
   if (wantsStream && !binaryOutput) return sseFromResponse(responsePromise);
   // Edits routinely take 60-120s. Behind Cloudflare an idle origin is cut at 120s (HTTP 524), so a
@@ -303,6 +311,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  let queueDeadline;
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
@@ -312,7 +321,10 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     if (credentials?.waitForImageSlot) {
       const timeoutMs = queueTimeoutMs || 30_000;
-      if (await credentials.waitForImageSlot(timeoutMs, signal)) continue;
+      // One overall queue deadline: a freed slot taken by another request must not restart the wait.
+      queueDeadline ??= performance.now() + timeoutMs;
+      const remaining = queueDeadline - performance.now();
+      if (remaining > 0 && await credentials.waitForImageSlot(remaining, signal)) continue;
       return unavailableResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, `[${provider}/${model}] image capacity is full`, new Date(Date.now() + timeoutMs).toISOString(), `retry after ${Math.ceil(timeoutMs / 1000)}s`);
     }
 

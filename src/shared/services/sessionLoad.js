@@ -21,14 +21,15 @@ export function getConnectionLoad(state, connectionId, now = Date.now()) {
 export function snapshotSessionLoad(state, connections, limits, now = Date.now()) {
   return connections.map(({ id, provider }) => {
     const load = getConnectionLoad(state, id, now);
-    const maxConcurrent = limits?.[provider] ?? DEFAULT_SESSION_CONCURRENCY;
+    const limit = limits?.[provider];
+    const maxConcurrent = Number.isInteger(limit) && limit >= 1 ? limit : null;
     return {
       connectionId: id,
       activeRequests: load.activeRequests,
       maxConcurrent,
       ewmaLatencyMs: load.ewmaLatencyMs,
       recentErrors: load.recentErrors,
-      overloaded: load.activeRequests >= maxConcurrent,
+      overloaded: maxConcurrent !== null && load.activeRequests >= maxConcurrent,
     };
   });
 }

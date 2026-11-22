@@ -29,4 +29,24 @@ describe("automatic pricing sync", () => {
     expect(aliases.claude["claude-sonnet-5"]).toMatchObject({ input: 2, output: 10 });
     expect(aliases.gemini["gemini-3.8-flash"]).toMatchObject({ input: 1, output: 5 });
   });
+
+  it("skips OpenRouter's -1 dynamic-price sentinel", () => {
+    const pricing = parseOpenRouterModels({ data: [
+      { id: "openrouter/auto", pricing: { prompt: "-1", completion: "-1" } },
+      { id: "openai/gpt-6.2-sol", pricing: { prompt: "0.000002", completion: "0.00001" } },
+    ] });
+    expect(pricing["openrouter/auto"]).toBeUndefined();
+    expect(pricing["openai/gpt-6.2-sol"]).toMatchObject({ input: 2, output: 10 });
+  });
+
+  it("never builds alias tables for KV keys the sync owns (openrouter, _meta)", () => {
+    const aliases = buildProviderAliases({
+      "openrouter/fusion": { input: 1, output: 1 },
+      "_meta/x": { input: 1, output: 1 },
+      "openai/gpt-6.2-sol": { input: 2, output: 10 },
+    });
+    expect(aliases.openrouter).toBeUndefined();
+    expect(aliases._meta).toBeUndefined();
+    expect(aliases.codex["gpt-6.2-sol"]).toMatchObject({ input: 2 });
+  });
 });

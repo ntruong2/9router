@@ -504,3 +504,28 @@ describe("Antigravity quota-aware routing", () => {
     }
   });
 
+  it("does not cap chat or image concurrency unless a per-provider limit is configured", async () => {
+    mocks.getSettings.mockResolvedValue({});
+    mocks.getProviderConnections.mockResolvedValue([{ id: "solo", isActive: true }]);
+    const chat = await Promise.all([1, 2, 3].map(() => getProviderCredentials("openrouter", null, "m", { reserveChatSlot: true })));
+    expect(chat.map((c) => c.connectionId)).toEqual(["solo", "solo", "solo"]);
+    expect(chat.every((c) => c.releaseChatSlot === undefined && !c.waitForChatSlot)).toBe(true);
+    const image = await Promise.all([1, 2].map(() => getProviderCredentials("codex", null, "m", { reserveImageSlot: true })));
+    expect(image.map((c) => c.connectionId)).toEqual(["solo", "solo"]);
+    expect(image.every((c) => c.releaseImageSlot === undefined && !c.waitForImageSlot)).toBe(true);
+  });
+
+  it("queues chat and image requests once a per-provider limit is configured", async () => {
+    mocks.getSettings.mockResolvedValue({ sessionMaxConcurrent: { openrouter: 1 }, imageMaxConcurrent: { codex: 1 } });
+    mocks.getProviderConnections.mockResolvedValue([{ id: "capped", isActive: true }]);
+    const firstChat = await getProviderCredentials("openrouter", null, "m", { reserveChatSlot: true });
+    const secondChat = await getProviderCredentials("openrouter", null, "m", { reserveChatSlot: true });
+    expect(firstChat.connectionId).toBe("capped");
+    expect(typeof secondChat.waitForChatSlot).toBe("function");
+    firstChat.releaseChatSlot();
+    const firstImage = await getProviderCredentials("codex", null, "m", { reserveImageSlot: true });
+    const secondImage = await getProviderCredentials("codex", null, "m", { reserveImageSlot: true });
+    expect(firstImage.connectionId).toBe("capped");
+    expect(typeof secondImage.waitForImageSlot).toBe("function");
+    firstImage.releaseImageSlot();
+  });

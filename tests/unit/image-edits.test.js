@@ -273,4 +273,20 @@ describe("long-running edits (Cloudflare 120s idle cut)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("runs a request once per Idempotency-Key and replays the result to retries", async () => {
+    mocks.core.mockImplementation(async () => ({
+      success: true,
+      response: new Response(JSON.stringify({ created: 1, data: [{ b64_json: "AAA" }] }), { headers: { "Content-Type": "application/json" } }),
+    }));
+    const send = () => handleImageEdit(json(
+      { model: "codex/gpt-image-2.6", prompt: "p", images: ["data:image/png;base64,iVBORw0KGgo="] },
+      { "Idempotency-Key": "fixed-key-1" },
+    ));
+    const first = await send();
+    const second = await send();
+    expect(await first.json()).toEqual({ created: 1, data: [{ b64_json: "AAA" }] });
+    expect(await second.json()).toEqual({ created: 1, data: [{ b64_json: "AAA" }] });
+    expect(mocks.core).toHaveBeenCalledTimes(1);
+  });
 });

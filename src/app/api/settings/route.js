@@ -59,10 +59,10 @@ export async function PATCH(request) {
     }
     for (const [key, isValid, description] of [
       ["sessionPin", (value) => typeof value === "boolean", "booleans"],
-      ["sessionMaxConcurrent", (value) => Number.isInteger(value) && value >= 1 && value <= MAX_SESSION_CONCURRENCY,
-        `integers from 1 to ${MAX_SESSION_CONCURRENCY}`],
-      ["imageMaxConcurrent", (value) => Number.isInteger(value) && value >= 1 && value <= MAX_IMAGE_CONCURRENT,
-        `integers from 1 to ${MAX_IMAGE_CONCURRENT}`],
+      ["sessionMaxConcurrent", (value) => value === null || (Number.isInteger(value) && value >= 1 && value <= MAX_SESSION_CONCURRENCY),
+        `integers from 1 to ${MAX_SESSION_CONCURRENCY} (null = unlimited)`],
+      ["imageMaxConcurrent", (value) => value === null || (Number.isInteger(value) && value >= 1 && value <= MAX_IMAGE_CONCURRENT),
+        `integers from 1 to ${MAX_IMAGE_CONCURRENT} (null = unlimited)`],
     ]) {
       if (!Object.hasOwn(body, key)) continue;
       const values = body[key];

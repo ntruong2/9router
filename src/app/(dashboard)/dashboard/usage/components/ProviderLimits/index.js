@@ -811,8 +811,10 @@ export default function ProviderLimits() {
   }, [sessionPin]);
 
   const updateSessionMaxConcurrent = useCallback(async (provider, value) => {
-    const next = Math.max(1, Math.min(32, Number.parseInt(value, 10) || 2));
-    const previous = sessionMaxConcurrent[provider] || 2;
+    // Empty input removes the cap (null = unlimited).
+    const parsed = Number.parseInt(value, 10);
+    const next = Number.isFinite(parsed) ? Math.max(1, Math.min(32, parsed)) : null;
+    const previous = sessionMaxConcurrent[provider] ?? null;
     setSessionMaxConcurrent((current) => ({ ...current, [provider]: next }));
     try {
       const response = await fetch("/api/settings", {
@@ -1248,14 +1250,15 @@ export default function ProviderLimits() {
           </select>
 
           {providerFilter !== "all" && (
-            <label className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs dark:border-white/10" title="Maximum concurrent requests per account">
+            <label className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs dark:border-white/10" title="Maximum concurrent requests per account (empty = unlimited)">
               <span className="material-symbols-outlined text-[14px]">speed</span>
               <span className="hidden sm:inline">Load</span>
               <input
                 type="number"
                 min="1"
                 max="32"
-                value={sessionMaxConcurrent[providerFilter] || 2}
+                value={sessionMaxConcurrent[providerFilter] ?? ""}
+                placeholder="∞"
                 onChange={(event) => updateSessionMaxConcurrent(providerFilter, event.target.value)}
                 className="w-10 bg-transparent text-center text-xs outline-none"
                 aria-label={`${providerFilter} maximum concurrent requests per account`}
@@ -1514,7 +1517,7 @@ export default function ProviderLimits() {
                       ) : null}
                       {sessionLoad && (
                         <p className={`text-[11px] ${sessionLoad.overloaded ? "font-semibold text-amber-700 dark:text-amber-300" : "text-text-muted"}`}>
-                          {sessionLoad.activeRequests}/{sessionLoad.maxConcurrent} requests active
+                          {sessionLoad.activeRequests}/{sessionLoad.maxConcurrent ?? "∞"} requests active
                           {sessionLoad.overloaded && " · At capacity"}
                           {sessionLoad.ewmaLatencyMs > 0 && ` · ${Math.round(sessionLoad.ewmaLatencyMs)}ms avg`}
                           {sessionLoad.recentErrors > 0 && ` · ${sessionLoad.recentErrors} recent error${sessionLoad.recentErrors === 1 ? "" : "s"}`}
@@ -1522,7 +1525,7 @@ export default function ProviderLimits() {
                       )}
                       {imageLoad && imageLoad.running > 0 && (
                         <p className={`text-[11px] ${imageLoad.overloaded ? "font-semibold text-orange-700 dark:text-orange-300" : "text-text-muted"}`}>
-                          {imageLoad.running}/{imageLoad.maxConcurrent} image jobs
+                          {imageLoad.running}/{imageLoad.maxConcurrent ?? "∞"} image jobs
                         </p>
                       )}
                       {getConnectionSecondaryLabel(conn) ? (

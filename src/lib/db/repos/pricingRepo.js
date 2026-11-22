@@ -18,6 +18,7 @@ function withOpenRouterAliases(automaticPricing) {
     const separator = modelId.indexOf("/");
     if (separator <= 0 || modelId.includes(":")) continue;
     const namespace = modelId.slice(0, separator);
+    if (namespace === "openrouter" || namespace === "_meta") continue;
     const model = modelId.slice(separator + 1);
     for (const provider of namespaceMap[namespace] || [namespace]) {
       (aliases[provider] ||= {})[model] = { ...pricing, source: "openrouter-alias" };

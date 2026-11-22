@@ -9,8 +9,8 @@ import { selectQuotaAccount } from "@/shared/services/smartQuotaDecision.js";
 import { getPaidFallbackDecision } from "@/shared/services/fallbackPolicy.js";
 import { createSessionPinState, getPinnedConnectionId, pinConnection, clearSessionPin, isSessionPinEnabled, leastSharedConnections } from "@/shared/services/sessionAccountPin.js";
 import { getConnectionQuotaHealth, getRecommendedConnection, matchQuotaRows } from "@/shared/services/smartQuota.js";
-import { createSessionLoadState, DEFAULT_SESSION_CONCURRENCY, getConnectionLoad, getRateLimitResetFromHeader, reserveConnectionLoad, selectLeastLoadedConnections, snapshotSessionLoad, waitForConnectionLoad } from "@/shared/services/sessionLoad.js";
-import { createImageLoadState, DEFAULT_IMAGE_CONCURRENT, getImageLoad, reserveImageSlot, selectLeastLoadedImageConnections, waitForImageSlot } from "@/shared/services/imageLoad.js";
+import { createSessionLoadState, getConnectionLoad, getRateLimitResetFromHeader, reserveConnectionLoad, selectLeastLoadedConnections, snapshotSessionLoad, waitForConnectionLoad } from "@/shared/services/sessionLoad.js";
+import { createImageLoadState, getImageLoad, reserveImageSlot, selectLeastLoadedImageConnections, waitForImageSlot } from "@/shared/services/imageLoad.js";
 
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
@@ -29,9 +29,14 @@ export function getSessionLoadSnapshot(connections, settings) {
 export function getImageLoadSnapshot(connections, settings) {
   return connections.map(({ id, provider }) => {
     const load = getImageLoad(imageLoad, id);
-    const maxConcurrent = settings.imageMaxConcurrent?.[provider] ?? DEFAULT_IMAGE_CONCURRENT;
-    return { connectionId: id, provider, ...load, maxConcurrent, overloaded: load.running >= maxConcurrent };
+    const maxConcurrent = configuredLimit(settings.imageMaxConcurrent, provider);
+    return { connectionId: id, provider, ...load, maxConcurrent, overloaded: maxConcurrent !== null && load.running >= maxConcurrent };
   });
+}
+
+function configuredLimit(limits, provider) {
+  const value = limits?.[provider];
+  return Number.isInteger(value) && value >= 1 ? value : null;
 }
 
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
@@ -178,8 +183,13 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const settings = await getSettings();
     const pinConfigured = isSessionPinEnabled(settings, providerId);
     const sessionPinEnabled = options.sessionId && pinConfigured;
-    const balanceLoad = options.reserveChatSlot === true;
-    const balanceImageLoad = options.reserveImageSlot === true;
+    // Concurrency caps are opt-in per provider: without a configured limit, requests are not
+    // queued or rejected (an implicit default cap turned parallel agents into 503s).
+    const chatRequest = options.reserveChatSlot === true;
+    const chatLimit = configuredLimit(settings.sessionMaxConcurrent, providerId);
+    const imageLimit = configuredLimit(settings.imageMaxConcurrent, providerId);
+    const balanceLoad = chatRequest && chatLimit !== null;
+    const balanceImageLoad = options.reserveImageSlot === true && imageLimit !== null;
     const pinnedSessionId = sessionPinEnabled ? getPinnedConnectionId(sessionPins, providerId, options.sessionId) : null;
     if (options.paidFallback && settings.paidFallback?.enabled === true) {
       let denial;
@@ -198,7 +208,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       }
     }
     const now = Date.now();
-    if ((balanceLoad || sessionPinEnabled) && settings.smartQuotaUse === true) {
+    if ((chatRequest || sessionPinEnabled) && settings.smartQuotaUse === true) {
       availableConnections = availableConnections.filter((candidate) => {
         const quotas = matchQuotaRows(candidate.smartQuotaSnapshot, model, providerId);
         if (!quotas.length) return true;
@@ -217,7 +227,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const pinned = availableConnections.find(({ id }) => id === pinnedSessionId);
     if (balanceImageLoad) {
       imageLoad.maxQueue = settings.imageQueueMaxSize || imageLoad.maxQueue;
-      const maxConcurrent = settings.imageMaxConcurrent?.[providerId] ?? DEFAULT_IMAGE_CONCURRENT;
+      const maxConcurrent = imageLimit;
       const candidates = availableConnections.filter(({ id }) => getImageLoad(imageLoad, id).running < maxConcurrent);
       if (!candidates.length) {
         return { waitForImageSlot: (timeoutMs, signal) => waitForImageSlot(imageLoad, timeoutMs, signal) };
@@ -225,7 +235,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       availableConnections = selectLeastLoadedImageConnections(imageLoad, candidates);
     }
     if (balanceLoad) {
-      const limit = settings.sessionMaxConcurrent?.[providerId] ?? DEFAULT_SESSION_CONCURRENCY;
+      const limit = chatLimit;
       const hasCapacity = ({ id }) => getConnectionLoad(sessionLoad, id).activeRequests < limit;
       const target = preferred || pinned;
       availableConnections = target
@@ -262,10 +272,10 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
     if (sessionPinEnabled) pinConnection(sessionPins, providerId, options.sessionId, connection.id);
     const releaseChatSlot = balanceLoad
-      ? reserveConnectionLoad(sessionLoad, connection.id, { maxConcurrent: settings.sessionMaxConcurrent?.[providerId] ?? DEFAULT_SESSION_CONCURRENCY })
+      ? reserveConnectionLoad(sessionLoad, connection.id, { maxConcurrent: chatLimit })
       : undefined;
     const releaseImageSlot = balanceImageLoad
-      ? reserveImageSlot(imageLoad, connection.id, { maxConcurrent: settings.imageMaxConcurrent?.[providerId] ?? DEFAULT_IMAGE_CONCURRENT })
+      ? reserveImageSlot(imageLoad, connection.id, { maxConcurrent: imageLimit })
       : undefined;
 
     return {

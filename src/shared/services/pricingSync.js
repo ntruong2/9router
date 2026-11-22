@@ -50,7 +50,8 @@ export function parseOpenRouterModels(body) {
     const input = numberFrom(pricing.prompt) * 1_000_000;
     const output = numberFrom(pricing.completion) * 1_000_000;
     const cached = numberFrom(pricing.input_cache_read ?? pricing.cache_read ?? pricing.prompt) * 1_000_000;
-    if (![input, output, cached].every(Number.isFinite)) return [];
+    // OpenRouter marks dynamic-price routers (openrouter/auto, ...) with -1: no fixed rate to store.
+    if (![input, output, cached].every((value) => Number.isFinite(value) && value >= 0)) return [];
     return [[model.id, { input: roundRate(input), output: roundRate(output), cached: roundRate(cached), reasoning: roundRate(output), cache_creation: roundRate(input), source: "openrouter", syncedAt }]];
   }));
 }
@@ -66,6 +67,10 @@ export function buildOpenAiAliases(openRouterPricing) {
   return aliases;
 }
 
+// KV keys owned by the sync itself; an OpenRouter namespace with the same name (openrouter/auto)
+// would otherwise overwrite the full OpenRouter table or the metadata.
+export const RESERVED_ALIAS_NAMESPACES = new Set(["openrouter", "_meta"]);
+
 export function buildProviderAliases(openRouterPricing) {
   const aliases = {};
   const namespaceMap = { openai: ["openai", "codex"], anthropic: ["anthropic", "claude"], google: ["google", "gemini"] };
@@ -73,6 +78,7 @@ export function buildProviderAliases(openRouterPricing) {
     const separator = modelId.indexOf("/");
     if (separator <= 0 || modelId.includes(":")) continue;
     const namespace = modelId.slice(0, separator);
+    if (RESERVED_ALIAS_NAMESPACES.has(namespace)) continue;
     const model = modelId.slice(separator + 1);
     for (const provider of namespaceMap[namespace] || [namespace]) {
       (aliases[provider] ||= {})[model] = { ...pricing, source: "openrouter-alias" };
