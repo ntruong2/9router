@@ -9,6 +9,7 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
   const [saving, setSaving] = useState(false);
   const [newProvider, setNewProvider] = useState("");
   const [newModel, setNewModel] = useState("");
+  const [modelQuery, setModelQuery] = useState("");
 
   const loadPricing = async () => {
     setLoading(true);
@@ -107,19 +108,27 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
 
   // Get all unique providers and models for display
   const allProviders = Object.keys(pricingData).sort();
+  const visibleProviders = allProviders.filter((provider) => {
+    const query = modelQuery.trim().toLowerCase();
+    return !query || Object.keys(pricingData[provider]).some((model) => `${provider}/${model}`.toLowerCase().includes(query));
+  });
   const pricingFields = ["input", "output", "cached", "reasoning", "cache_creation"];
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-bg-base border border-border rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="p-4 border-b border-border flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Pricing Configuration</h2>
+        <div className="flex items-center justify-between border-b border-border bg-bg-base/95 p-4 backdrop-blur">
+          <div>
+            <h2 className="text-xl font-semibold">Pricing Configuration</h2>
+            <p className="mt-0.5 text-xs text-text-muted">Rates are in dollars per million tokens</p>
+          </div>
           <button
             onClick={onClose}
-            className="text-text-muted hover:text-text text-2xl leading-none"
+            aria-label="Close pricing configuration"
+            className="flex size-8 items-center justify-center rounded-lg text-text-muted transition hover:bg-bg-hover hover:text-text"
           >
-            ×
+            <span className="material-symbols-outlined text-[20px]">close</span>
           </button>
         </div>
 
@@ -130,12 +139,21 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
           ) : (
             <div className="space-y-6">
               {/* Instructions */}
-              <div className="bg-bg-subtle border border-border rounded-lg p-3 text-sm">
-                <p className="font-medium mb-1">Pricing Rates Format</p>
-                <p className="text-text-muted">
-                  All rates are in <strong>dollars per million tokens</strong> ($/1M tokens).
-                  Example: Input rate of 2.50 means $2.50 per 1,000,000 input tokens.
-                </p>
+              <div className="flex flex-col gap-3 rounded-2xl border border-border bg-bg-subtle p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="material-symbols-outlined text-[18px] text-primary">info</span>
+                  <span className="text-text-muted">Search the catalog or add a custom model override.</span>
+                </div>
+                <label className="relative block sm:w-72">
+                  <span className="material-symbols-outlined pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[17px] text-text-muted">search</span>
+                  <input
+                    value={modelQuery}
+                    onChange={(event) => setModelQuery(event.target.value)}
+                    placeholder="Search provider or model"
+                    className="h-9 w-full rounded-xl border border-border bg-bg-base pl-9 pr-3 text-sm text-text-primary outline-none transition focus:border-primary"
+                    aria-label="Search provider or model"
+                  />
+                </label>
               </div>
 
               <div className="flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 sm:flex-row sm:items-end">
@@ -154,15 +172,20 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
 
               {/* Pricing Tables */}
               {allProviders.map(provider => {
-                const models = Object.keys(pricingData[provider]).sort();
+                const models = Object.keys(pricingData[provider]).sort().filter((model) => {
+                  const query = modelQuery.trim().toLowerCase();
+                  return !query || `${provider}/${model}`.toLowerCase().includes(query);
+                });
+                if (!models.length) return null;
                 return (
-                  <div key={provider} className="border border-border rounded-lg overflow-hidden">
-                    <div className="bg-bg-subtle px-4 py-2 font-semibold text-sm">
-                      {provider.toUpperCase()}
+                  <div key={provider} className="overflow-hidden rounded-2xl border border-border">
+                    <div className="flex items-center justify-between bg-bg-subtle px-4 py-3">
+                      <span className="text-sm font-semibold">{provider.toUpperCase()}</span>
+                      <span className="text-xs text-text-muted">{models.length} shown</span>
                     </div>
                     <div className="overflow-x-auto">
                       <table className="w-full text-sm">
-                        <thead className="bg-bg-hover text-text-muted uppercase text-xs">
+                        <thead className="sticky top-0 z-10 bg-bg-hover text-xs uppercase text-text-muted">
                           <tr>
                             <th className="px-3 py-2 text-left">Model</th>
                             <th className="px-3 py-2 text-right">Input</th>
@@ -197,9 +220,9 @@ export default function PricingModal({ isOpen, onClose, onSave }) {
                 );
               })}
 
-              {allProviders.length === 0 && (
+              {visibleProviders.length === 0 && (
                 <div className="text-center py-8 text-text-muted">
-                  No pricing data available
+                  {allProviders.length === 0 ? "No pricing data available" : "No models match your search"}
                 </div>
               )}
             </div>

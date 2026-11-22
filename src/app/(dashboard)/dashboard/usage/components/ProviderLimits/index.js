@@ -266,6 +266,11 @@ export default function ProviderLimits() {
   }, [hasHydratedViewState, providerFilter, accountFilter, quotaSortMode, expiringFirst, pageSize]);
 
   useEffect(() => {
+    if (!hasHydratedViewState) return;
+    setPage(1);
+  }, [accountFilter, providerFilter, hasHydratedViewState]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const saved = window.localStorage.getItem("quotaTrackerSortMode");
     if (["default", "remaining-asc", "remaining-desc"].includes(saved)) setQuotaSortMode(saved);
@@ -312,7 +317,12 @@ export default function ProviderLimits() {
         setConnections([]);
         setProviderOptions([]);
         setPagination({ page: 1, pageSize, total: 0, totalPages: 1 });
-        setTotals({ eligibleConnections: 0, providerFilteredConnections: 0 });
+        setTotals({
+          eligibleConnections: 0,
+          providerFilteredConnections: 0,
+          accountFilteredConnections: 0,
+          filteredConnections: 0,
+        });
         return [];
       }
     },

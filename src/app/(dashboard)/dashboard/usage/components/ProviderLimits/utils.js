@@ -143,6 +143,16 @@ export function getConnectionsEmptyMessage(totals, providerFilter, accountFilter
           : `No ${accountFilter === "inactive" ? "turned off" : accountFilter === "active" ? "active" : accountFilter === "quota-available" ? "available quota" : accountFilter === "quota-exhausted" ? "exhausted quota" : "matching"} accounts found for ${providerFilter}.`,
     };
   }
+  if (!totals.accountFilteredConnections || !totals.filteredConnections) {
+    return {
+      icon: "filter_alt_off",
+      title: "No Accounts Match Current Filters",
+      description:
+        providerFilter === "all"
+          ? "Try changing the account status or quota filter to see more quota trackers."
+          : `No ${accountFilter === "inactive" ? "turned off" : accountFilter === "active" ? "active" : accountFilter === "quota-available" ? "available quota" : accountFilter === "quota-exhausted" ? "exhausted quota" : "matching"} accounts found for ${providerFilter}.`,
+    };
+  }
   return {
     icon: "filter_alt_off",
     title: "No Accounts On This Page",
@@ -176,12 +186,12 @@ export function getSafePagination(pagination, fallbackPageSize) {
 }
 
 export function getSafeTotals(totals, fallbackTotal = 0) {
-  return (
-    totals || {
-      eligibleConnections: fallbackTotal,
-      providerFilteredConnections: fallbackTotal,
-    }
-  );
+  return {
+    eligibleConnections: totals?.eligibleConnections ?? fallbackTotal,
+    providerFilteredConnections: totals?.providerFilteredConnections ?? fallbackTotal,
+    accountFilteredConnections: totals?.accountFilteredConnections ?? totals?.providerFilteredConnections ?? fallbackTotal,
+    filteredConnections: totals?.filteredConnections ?? totals?.accountFilteredConnections ?? totals?.providerFilteredConnections ?? fallbackTotal,
+  };
 }
 
 export function shouldResetPage(previousValue, nextValue) {

@@ -135,6 +135,8 @@ export async function GET(request) {
       totals: {
         eligibleConnections: eligibleConnections.length,
         providerFilteredConnections: providerFilteredConnections.length,
+        accountFilteredConnections: accountFilteredConnections.length,
+        filteredConnections: quotaFilteredConnections.length,
       },
     });
   } catch (error) {

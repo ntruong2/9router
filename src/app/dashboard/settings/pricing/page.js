@@ -1,12 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Card from "@/shared/components/Card";
 import PricingModal from "@/shared/components/PricingModal";
 
 export default function PricingSettingsPage() {
-  const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [currentPricing, setCurrentPricing] = useState(null);
   const [pricingMeta, setPricingMeta] = useState(null);
@@ -87,135 +85,125 @@ export default function PricingSettingsPage() {
     return Object.keys(currentPricing).sort();
   };
 
+  const providers = getProviders();
+  const modelCount = getModelCount();
+  const syncedModelCount = pricingMeta?.providers?.openrouter?.modelCount || 0;
+
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Pricing Settings</h1>
-          <p className="text-text-muted mt-1">
-            Configure pricing rates for cost tracking and calculations
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <button
-            onClick={syncPricing}
-            disabled={syncing}
-            className="px-4 py-2 border border-border rounded hover:bg-bg-hover transition-colors disabled:opacity-50"
-          >
-            {syncing ? "Syncing..." : "Sync now"}
-          </button>
-          <button
-            onClick={() => setShowModal(true)}
-            className="px-4 py-2 bg-primary text-white rounded hover:bg-primary/90 transition-colors"
-          >
-            Edit Pricing
-          </button>
-        </div>
-      </div>
-
-      <Card className="p-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-text-muted text-sm">OpenRouter pricing</div>
-          <div className="font-medium">Đồng bộ lần cuối: {formattedLastSyncedAt}</div>
-        </div>
-        <div className="text-sm" aria-live="polite">
-          {syncMessage && <span className="text-success">{syncMessage}</span>}
-          {syncError && <span className="text-error">{syncError}</span>}
-        </div>
-      </Card>
-
-      {/* Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="p-4">
-          <div className="text-text-muted text-sm uppercase font-semibold">
-            Total Models
+    <div className="mx-auto max-w-7xl space-y-6 px-4 py-5 sm:px-6 lg:py-8">
+      <section className="relative overflow-hidden rounded-3xl border border-brand-500/20 bg-gradient-to-br from-brand-500/15 via-surface to-surface p-5 shadow-[var(--shadow-soft)] sm:p-7">
+        <div className="pointer-events-none absolute -right-16 -top-20 size-56 rounded-full bg-brand-500/15 blur-3xl" />
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-brand-500/20 bg-brand-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-brand-600 dark:text-brand-300">
+              <span className="material-symbols-outlined text-[15px]">payments</span>
+              Cost intelligence
+            </div>
+            <h1 className="text-3xl font-semibold tracking-tight text-text-main sm:text-4xl">Model pricing</h1>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-text-muted sm:text-base">
+              Keep token costs accurate across providers with automatic catalog updates and manual overrides.
+            </p>
           </div>
-          <div className="text-2xl font-bold mt-1">
-            {loading ? "..." : getModelCount()}
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            <button
+              onClick={syncPricing}
+              disabled={syncing}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-border bg-surface/80 px-4 text-sm font-medium text-text-main transition hover:border-brand-500/40 hover:bg-surface-2 disabled:cursor-wait disabled:opacity-60"
+            >
+              <span className={`material-symbols-outlined text-[18px] ${syncing ? "animate-spin" : ""}`}>sync</span>
+              {syncing ? "Syncing catalog" : "Sync now"}
+            </button>
+            <button
+              onClick={() => setShowModal(true)}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-brand-600 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700"
+            >
+              <span className="material-symbols-outlined text-[18px]">tune</span>
+              Edit pricing
+            </button>
           </div>
+        </div>
+        <div className="relative mt-6 flex flex-col gap-3 border-t border-black/10 pt-4 text-sm dark:border-white/10 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2 text-text-muted">
+            <span className="size-2 rounded-full bg-emerald-500 shadow-[0_0_0_4px] shadow-emerald-500/10" />
+            <span>OpenRouter catalog</span>
+            <span className="text-text-main">{syncedModelCount || "—"} models synced</span>
+          </div>
+          <div className="text-text-muted">Last synced <span className="font-medium text-text-main">{formattedLastSyncedAt}</span></div>
+        </div>
+        {(syncMessage || syncError) && (
+          <div aria-live="polite" className={`relative mt-3 rounded-xl border px-3 py-2 text-sm ${syncError ? "border-red-500/20 bg-red-500/10 text-red-600 dark:text-red-300" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"}`}>
+            {syncError || syncMessage}
+          </div>
+        )}
+      </section>
+
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {[
+          { label: "Priced models", value: modelCount, icon: "neurology", tone: "text-brand-600 bg-brand-500/10" },
+          { label: "Providers", value: providers.length, icon: "hub", tone: "text-cyan-600 bg-cyan-500/10" },
+          { label: "Pricing status", value: loading ? "..." : "Active", icon: "verified", tone: "text-emerald-600 bg-emerald-500/10" },
+        ].map((stat) => (
+          <Card key={stat.label} className="flex items-center gap-3 p-4 sm:p-5">
+            <div className={`flex size-10 shrink-0 items-center justify-center rounded-xl ${stat.tone}`}>
+              <span className="material-symbols-outlined text-[21px]">{stat.icon}</span>
+            </div>
+            <div className="min-w-0">
+              <div className="text-xs font-medium uppercase tracking-wide text-text-muted">{stat.label}</div>
+              <div className="mt-1 text-2xl font-semibold tabular-nums text-text-main">{loading && stat.label !== "Pricing status" ? "..." : stat.value}</div>
+            </div>
+          </Card>
+        ))}
+      </section>
+
+      <section className="grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+        <Card className="p-5 sm:p-6">
+          <div className="mb-5 flex items-end justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600 dark:text-brand-300">Catalog coverage</p>
+              <h2 className="mt-1 text-xl font-semibold text-text-main">Current pricing overview</h2>
+            </div>
+            <button onClick={() => setShowModal(true)} className="shrink-0 text-sm font-medium text-brand-600 hover:text-brand-700 dark:text-brand-300 dark:hover:text-brand-200">View details <span aria-hidden="true">→</span></button>
+          </div>
+          {loading ? (
+            <div className="flex min-h-40 items-center justify-center text-sm text-text-muted">Loading pricing data...</div>
+          ) : providers.length ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {providers.slice(0, 8).map((provider, index) => (
+                <div key={provider} className="group flex items-center justify-between rounded-2xl border border-border-subtle bg-bg/50 px-4 py-3 transition hover:border-brand-500/30 hover:bg-brand-500/5">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 text-xs font-bold text-text-muted">{String(index + 1).padStart(2, "0")}</div>
+                    <span className="truncate text-sm font-semibold text-text-main">{provider}</span>
+                  </div>
+                  <span className="shrink-0 text-xs tabular-nums text-text-muted">{Object.keys(currentPricing[provider]).length} models</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex min-h-40 items-center justify-center text-sm text-text-muted">No pricing data available</div>
+          )}
+          {providers.length > 8 && <p className="mt-4 text-xs text-text-muted">+ {providers.length - 8} more providers in the full pricing view.</p>}
         </Card>
-        <Card className="p-4">
-          <div className="text-text-muted text-sm uppercase font-semibold">
-            Providers
-          </div>
-          <div className="text-2xl font-bold mt-1">
-            {loading ? "..." : getProviders().length}
-          </div>
-        </Card>
-        <Card className="p-4">
-          <div className="text-text-muted text-sm uppercase font-semibold">
-            Status
-          </div>
-          <div className="text-2xl font-bold mt-1 text-success">
-            {loading ? "..." : "Active"}
-          </div>
-        </Card>
-      </div>
 
-      {/* Info Section */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">How Pricing Works</h2>
-        <div className="space-y-3 text-sm text-text-muted">
-          <p>
-            <strong>Cost Calculation:</strong> Costs are calculated based on token usage and pricing rates.
-            Each request&apos;s cost is determined by: (input_tokens × input_rate) + (output_tokens × output_rate) + (cached_tokens × cached_rate)
-          </p>
-          <p>
-            <strong>Pricing Format:</strong> All rates are in <strong>dollars per million tokens</strong> ($/1M tokens).
-            Example: An input rate of 2.50 means $2.50 per 1,000,000 input tokens.
-          </p>
-          <p>
-            <strong>Token Types:</strong>
-          </p>
-          <ul className="list-disc list-inside ml-4 space-y-1">
-            <li><strong>Input:</strong> Standard prompt tokens</li>
-            <li><strong>Output:</strong> Completion/response tokens</li>
-            <li><strong>Cached:</strong> Cached input tokens (typically 50% of input rate)</li>
-            <li><strong>Reasoning:</strong> Special reasoning/thinking tokens (fallback to output rate)</li>
-            <li><strong>Cache Creation:</strong> Tokens used to create cache entries (fallback to input rate)</li>
-          </ul>
-          <p>
-            <strong>Custom Pricing:</strong> You can override default pricing for specific models.
-            Reset to defaults anytime to restore standard rates.
-          </p>
-        </div>
-      </Card>
-
-      {/* Current Pricing Preview */}
-      <Card className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">Current Pricing Overview</h2>
-          <button
-            onClick={() => setShowModal(true)}
-            className="text-primary hover:underline text-sm"
-          >
-            View Full Details
-          </button>
-        </div>
-
-        {loading ? (
-          <div className="text-center py-4 text-text-muted">Loading pricing data...</div>
-        ) : currentPricing ? (
-          <div className="space-y-3">
-            {Object.keys(currentPricing).slice(0, 5).map(provider => (
-              <div key={provider} className="text-sm">
-                <span className="font-semibold">{provider.toUpperCase()}:</span>{" "}
-                <span className="text-text-muted">
-                  {Object.keys(currentPricing[provider]).length} models
-                </span>
+        <Card className="p-5 sm:p-6">
+          <div className="mb-5 flex size-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-300">
+            <span className="material-symbols-outlined text-[21px]">calculate</span>
+          </div>
+          <h2 className="text-lg font-semibold text-text-main">How costs are calculated</h2>
+          <p className="mt-2 text-sm leading-6 text-text-muted">Rates use dollars per million tokens. Each request combines input, output and cached token usage.</p>
+          <div className="mt-5 space-y-2 text-sm">
+            {[
+              ["Input", "Prompt tokens"],
+              ["Output", "Generated tokens"],
+              ["Cached", "Reused input tokens"],
+            ].map(([name, description]) => (
+              <div key={name} className="flex items-center justify-between rounded-xl bg-bg/60 px-3 py-2">
+                <span className="font-medium text-text-main">{name}</span>
+                <span className="text-text-muted">{description}</span>
               </div>
             ))}
-            {Object.keys(currentPricing).length > 5 && (
-              <div className="text-sm text-text-muted">
-                + {Object.keys(currentPricing).length - 5} more providers
-              </div>
-            )}
           </div>
-        ) : (
-          <div className="text-text-muted">No pricing data available</div>
-        )}
-      </Card>
+        </Card>
+      </section>
 
       {/* Pricing Modal */}
       {showModal && (
