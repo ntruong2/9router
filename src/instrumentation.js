@@ -10,5 +10,11 @@ export async function register() {
 
     const { startModelCatalogSync } = await import("@/lib/modelCatalog/sync.js");
     startModelCatalogSync();
+
+    // Boot-time app init (watchdog, tunnel resume, pricing sync, quota schedulers, ...).
+    // The root layout also imports bootstrap, but most dashboard pages are prerendered, so after a
+    // deploy that import only ran once someone opened a dynamically rendered page — sometimes
+    // never. bootstrap is idempotent (global guard) and skips the build phase.
+    await import("@/shared/services/bootstrap");
   }
 }
