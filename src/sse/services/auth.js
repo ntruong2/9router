@@ -8,7 +8,7 @@ import * as log from "../utils/logger.js";
 import { selectQuotaAccount } from "@/shared/services/smartQuotaDecision.js";
 import { getPaidFallbackDecision } from "@/shared/services/fallbackPolicy.js";
 import { createSessionPinState, getPinnedConnectionId, pinConnection, clearSessionPin, isSessionPinEnabled, leastSharedConnections } from "@/shared/services/sessionAccountPin.js";
-import { getConnectionQuotaHealth, getRecommendedConnection, matchQuotaRows } from "@/shared/services/smartQuota.js";
+import { getConnectionQuotaHealth, getRecommendedConnection, isDepletedUntilReset, matchQuotaRows } from "@/shared/services/smartQuota.js";
 import { createSessionLoadState, getConnectionLoad, getRateLimitResetFromHeader, reserveConnectionLoad, selectLeastLoadedConnections, snapshotSessionLoad, waitForConnectionLoad } from "@/shared/services/sessionLoad.js";
 import { createImageLoadState, getImageLoad, reserveImageSlot, selectLeastLoadedImageConnections, waitForImageSlot } from "@/shared/services/imageLoad.js";
 
@@ -210,6 +210,9 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     }
     const now = Date.now();
     if ((chatRequest || sessionPinEnabled) && settings.smartQuotaUse === true) {
+      // Accounts whose old snapshot still shows a window at 0% before its reset are tried only
+      // when nothing else is left: each one costs a full upstream 429 round trip (~2s).
+      const likelyDepleted = [];
       availableConnections = availableConnections.filter((candidate) => {
         const quotas = matchQuotaRows(candidate.smartQuotaSnapshot, model, providerId);
         if (!quotas.length) return true;
@@ -217,9 +220,14 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           ...candidate,
           smartQuotaSnapshot: { ...candidate.smartQuotaSnapshot, quotas },
         }, now);
+        if (health.stale && isDepletedUntilReset(quotas, now)) {
+          likelyDepleted.push(candidate);
+          return false;
+        }
         if (health.stale || health.remainingPercentage !== 0) return true;
         return false;
       });
+      if (!availableConnections.length) availableConnections = likelyDepleted;
       if (!availableConnections.length) {
         return { allRateLimited: true, retryAfter: null, retryAfterHuman: "quota exhausted" };
       }

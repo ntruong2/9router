@@ -207,6 +207,36 @@ describe("Antigravity quota-aware routing", () => {
     });
   });
 
+  it("skips accounts whose old snapshot is still depleted before its reset", async () => {
+    mocks.getSettings.mockResolvedValue({ smartQuotaUse: true });
+    const old = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    mocks.getProviderConnections.mockResolvedValue([
+      { id: "cx-empty", isActive: true, priority: 1, smartQuotaSnapshot: { fetchedAt: old, quotas: [{ key: "session", remainingPercentage: 100 }, { key: "weekly", remainingPercentage: 0, resetAt: later }] } },
+      { id: "cx-reset", isActive: true, priority: 2, smartQuotaSnapshot: { fetchedAt: old, quotas: [{ key: "weekly", remainingPercentage: 0, resetAt: earlier }] } },
+      { id: "cx-ok", isActive: true, priority: 3, smartQuotaSnapshot: { fetchedAt: old, quotas: [{ key: "weekly", remainingPercentage: 40 }] } },
+    ]);
+    const first = await getProviderCredentials("codex", null, "gpt-6.2-sol(low)", { reserveChatSlot: true });
+    expect(first.connectionId).toBe("cx-reset");
+    first.releaseChatSlot?.();
+    const next = await getProviderCredentials("codex", new Set(["cx-reset"]), "gpt-6.2-sol(low)", { reserveChatSlot: true });
+    expect(next.connectionId).toBe("cx-ok");
+    next.releaseChatSlot?.();
+  });
+
+  it("still tries a likely depleted account when it is the only one left", async () => {
+    mocks.getSettings.mockResolvedValue({ smartQuotaUse: true });
+    const old = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    mocks.getProviderConnections.mockResolvedValue([
+      { id: "cx-only", isActive: true, priority: 1, smartQuotaSnapshot: { fetchedAt: old, quotas: [{ key: "weekly", remainingPercentage: 0, resetAt: later }] } },
+    ]);
+    const creds = await getProviderCredentials("codex", null, "gpt-6.2-sol", { reserveChatSlot: true });
+    expect(creds.connectionId).toBe("cx-only");
+    creds.releaseChatSlot?.();
+  });
+
   it("prefers the account whose matching model bucket is healthy", async () => {
     mocks.getSettings.mockResolvedValue({ smartQuotaUse: true });
     mocks.getProviderConnections.mockResolvedValue([

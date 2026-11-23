@@ -159,6 +159,16 @@ export function getQuotaAlertState(snapshot, now = Date.now(), resetSoonMs = 60 
   };
 }
 
+// A depleted window stays depleted until its reset time, so an old snapshot that says "0% left,
+// resets at T" is still reliable before T. Snapshots refresh only while Quota Tracker shows the
+// account, so exhausted accounts hidden by its filter would otherwise look "stale" (= usable).
+export function isDepletedUntilReset(quotas, now = Date.now()) {
+  return (Array.isArray(quotas) ? quotas : []).some((quota) => {
+    const reset = Date.parse(quota?.resetAt);
+    return getQuotaRemainingPercentage(quota) === 0 && Number.isFinite(reset) && reset > now;
+  });
+}
+
 export function getConnectionQuotaHealth(connection, now = Date.now()) {
   if (!connection || connection.isActive === false) {
     return { eligible: false, score: -Infinity, remainingPercentage: null, stale: false, reason: "inactive" };
