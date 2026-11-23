@@ -39,7 +39,7 @@ describe("native Codex OAuth image generation", () => {
     }));
 
     expect(result.success).toBe(true);
-    expect(await result.response.json()).toEqual(image);
+    expect(await result.response.json()).toEqual({ ...image, usage: { input_tokens: 15, output_tokens: 515, total_tokens: 530 } });
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toBe("https://chatgpt.com/backend-api/codex/images/generations");
     expect(options.headers.authorization).toBe("Bearer test-oauth-token");

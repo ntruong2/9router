@@ -232,6 +232,17 @@ describe("long-running edits (Cloudflare 120s idle cut)", () => {
     expect(mocks.core.mock.calls[0][0].body.partial_images).toBeUndefined();
   });
 
+  it("carries provider usage on the image_edit.completed event", async () => {
+    const usage = { input_tokens: 4546, output_tokens: 344, total_tokens: 4890 };
+    mocks.core.mockResolvedValue({
+      success: true,
+      response: new Response(JSON.stringify({ created: 1, data: [{ b64_json: "AAA" }], usage }), { headers: { "Content-Type": "application/json" } }),
+    });
+    const text = await (await handleImageEdit(codexForm([["stream", "true"]]))).text();
+    const data = JSON.parse(text.match(/^event: image_edit\.completed\ndata: (.*)$/m)[1]);
+    expect(data).toMatchObject({ type: "image_edit.completed", b64_json: "AAA", usage });
+  });
+
   it("reports upstream failures as an SSE error event", async () => {
     mocks.core.mockResolvedValue({ success: false, status: 400, error: "bad prompt", response: new Response(JSON.stringify({ error: { message: "bad prompt" } }), { status: 400 }) });
     const res = await handleImageEdit(codexForm([["stream", "true"]]));

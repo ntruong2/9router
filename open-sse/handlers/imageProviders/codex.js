@@ -156,6 +156,16 @@ function extractStreamError(data) {
   return null;
 }
 
+// OpenAI Images API usage shape ({input_tokens, output_tokens, ...}) for the client-facing body,
+// built from the normalized usage so it only ever carries provider-reported counts.
+function toImagesUsage(usage) {
+  if (!usage) return null;
+  const out = { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens, total_tokens: usage.total_tokens };
+  if (usage.cached_tokens !== undefined) out.input_tokens_details = { cached_tokens: usage.cached_tokens };
+  if (usage.reasoning_tokens !== undefined) out.output_tokens_details = { reasoning_tokens: usage.reasoning_tokens };
+  return out;
+}
+
 function normalizeResponsesUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const input = raw.input_tokens ?? raw.prompt_tokens;
@@ -434,8 +444,8 @@ export default {
         }
         throw err;
       }
-      const result = { created: payload.created || nowSec(), data };
       const usage = normalizeResponsesUsage(payload.usage);
+      const result = { created: payload.created || nowSec(), data, ...(usage ? { usage: toImagesUsage(usage) } : {}) };
       if (streamToClient) {
         if (usage && onUsage) await onUsage(usage);
         if (onRequestSuccess) await onRequestSuccess();
@@ -453,7 +463,7 @@ export default {
       throw new Error(upstreamError || "Codex completed without an image. No upstream image result was provided.");
     }
     if (usage && onUsage) await onUsage(usage);
-    return { created: nowSec(), data: [{ b64_json: b64 }] };
+    return { created: nowSec(), data: [{ b64_json: b64 }], ...(usage ? { usage: toImagesUsage(usage) } : {}) };
   },
   normalize: (responseBody) => responseBody,
 };
