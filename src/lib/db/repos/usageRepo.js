@@ -240,6 +240,36 @@ export async function getActiveRequests() {
   return { activeRequests, recentRequests, errorProvider };
 }
 
+// Latency for speed stats: ttft only exists for streamed responses (time to first chunk).
+function buildUsageMeta(entry) {
+  const meta = {};
+  const total = Number(entry.latency?.total);
+  const ttft = Number(entry.latency?.ttft);
+  if (Number.isFinite(total) && total >= 0) meta.totalMs = Math.round(total);
+  if (meta.totalMs !== undefined && Number.isFinite(ttft) && ttft >= 0 && ttft <= total) meta.ttftMs = Math.round(ttft);
+  return meta;
+}
+
+const SPEED_PERIOD_MS = { "1h": 3_600_000, "6h": 21_600_000, "24h": 86_400_000, "7d": 604_800_000 };
+export const SPEED_PERIODS = Object.keys(SPEED_PERIOD_MS);
+
+/** Rows with latency for speed stats over a recent window (bounded: history is per-request). */
+export async function getSpeedRows(period = "24h", limit = 20_000) {
+  const db = await getAdapter();
+  const windowMs = SPEED_PERIOD_MS[period] || SPEED_PERIOD_MS["24h"];
+  const cutoff = new Date(Date.now() - windowMs).toISOString();
+  const rows = db.all(
+    `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, tokens, meta FROM usageHistory
+     WHERE timestamp >= ? AND meta LIKE '%totalMs%' ORDER BY timestamp DESC LIMIT ?`,
+    [cutoff, limit]
+  );
+  const accountNames = await getConnectionMapCached();
+  return {
+    rows: rows.map((r) => ({ ...r, tokens: parseJson(r.tokens, {}) || {}, meta: parseJson(r.meta, {}) || {} })),
+    accountNames,
+  };
+}
+
 export async function saveRequestUsage(entry) {
   try {
     const db = await getAdapter();
@@ -286,7 +316,7 @@ export async function saveRequestUsage(entry) {
           entry.timestamp, entry.provider || null, entry.model || null,
           entry.connectionId || null, entry.apiKey || null, entry.endpoint || null,
           promptTokens, completionTokens, entry.cost || 0, entry.status || "ok",
-          stringifyJson(tokens), stringifyJson({}),
+          stringifyJson(tokens), stringifyJson(buildUsageMeta(entry)),
         ]
       );
 
