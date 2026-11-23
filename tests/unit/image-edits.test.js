@@ -256,10 +256,10 @@ describe("long-running edits (Cloudflare 120s idle cut)", () => {
         response: new Response(JSON.stringify({ created: 1, data: [{ b64_json: "SLOW" }] }), { headers: { "Content-Type": "application/json" } }),
       }); }));
       const pending = handleImageEdit(codexForm());
-      // The 90s timer starts once the upload is parsed and the provider call is in flight.
+      // The 20s timer starts once the upload is parsed and the provider call is in flight.
       while (!mocks.core.mock.calls.length) await new Promise((r) => setImmediate(r));
       await new Promise((r) => setImmediate(r));
-      await vi.advanceTimersByTimeAsync(91000);
+      await vi.advanceTimersByTimeAsync(21000);
       const res = await pending;
       expect(res.status).toBe(200);
       expect(res.headers.get("x-accel-buffering")).toBe("no");

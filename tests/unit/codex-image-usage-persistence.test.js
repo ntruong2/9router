@@ -101,6 +101,7 @@ describe("Codex image usage persistence", () => {
         reasoning_tokens: 22,
       },
       status: "success",
+      latency: { total: expect.any(Number) },
     });
   });
 

@@ -24,7 +24,7 @@ const imageIdempotency = globalThis[Symbol.for("9router.imageIdempotency")] ||= 
 const IMAGE_IDEMPOTENCY_TTL_MS = 10 * 60 * 1000;
 const IMAGE_IDEMPOTENCY_MAX_ENTRIES = 200;
 
-function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage, startedAt }) {
   if (!usage || typeof usage !== "object") return;
   const promptTokens = usage.prompt_tokens;
   const completionTokens = usage.completion_tokens;
@@ -41,6 +41,7 @@ function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoi
     endpoint: endpoint || null,
     tokens: usage,
     status: "success",
+    ...(startedAt ? { latency: { total: Date.now() - startedAt } } : {}),
   }).catch(() => {});
 }
 
@@ -61,6 +62,7 @@ async function readJsonBody(request) {
  * @param {boolean} [options.edit] - /v1/images/edits: body.images holds the input images
  */
 export async function handleImageGeneration(request, { readBody = readJsonBody, edit = false } = {}) {
+  const startedAt = Date.now();
   const url = new URL(request.url);
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes("text/event-stream");
@@ -77,6 +79,10 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
   const parsed = await readBody(request);
   if (!parsed?.body) return errorResponse(parsed?.status || HTTP_STATUS.BAD_REQUEST, parsed?.message || "Invalid request body");
   const body = parsed.body;
+  // A slow upload (large multipart behind a tunnel) eats into the proxy's time budget; log it so a
+  // client-side cut can be told apart from a slow provider.
+  const bodyMs = Date.now() - startedAt;
+  log.info("IMAGE", `${edit ? "edit" : "generate"} ${body.model || "?"} · body read ${(bodyMs / 1000).toFixed(1)}s${request.headers.get("content-length") ? ` · ${(Number(request.headers.get("content-length")) / 1048576).toFixed(1)}MB` : ""}`);
   // OpenAI-style streaming (edits only): `stream: true` in the form/JSON body, not the Accept header.
   const openAiStream = edit && body.stream === true;
   delete body.stream;
@@ -105,14 +111,14 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
       return handleComboChat({
         body,
         models: comboModels,
-        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs }),
+        handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs, startedAt }),
         log,
         comboName: modelStr,
         comboStrategy,
         comboStickyLimit,
       });
     }
-    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs });
+    return handleSingleModelImage(body, modelStr, { wantsStream: false, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, edit, signal: request.signal, queueTimeoutMs: settings.imageQueueTimeoutMs, jobTimeoutMs: settings.imageJobTimeoutMs, startedAt });
   };
 
   // Look the key up BEFORE starting work: a retried request must reuse the first run instead of
@@ -138,14 +144,16 @@ export async function handleImageGeneration(request, { readBody = readJsonBody, 
   responsePromise ??= run();
   if (openAiStream && !binaryOutput) return openAiSseFromResponse(responsePromise, "image_edit");
   if (wantsStream && !binaryOutput) return sseFromResponse(responsePromise);
-  // Edits routinely take 60-120s. Behind Cloudflare an idle origin is cut at 120s (HTTP 524), so a
-  // slow plain-JSON request is answered early and kept alive with whitespace until the body is ready.
+  // Edits routinely take 60-120s. Behind Cloudflare an origin that sends nothing for ~100s is cut
+  // (HTTP 524, or a bare TCP reset for some clients), and the upload itself already uses part of that
+  // budget. So a plain-JSON edit that is not done within 20s is answered early with HTTP 200 and kept
+  // alive with whitespace until the body is ready.
   if (edit && !binaryOutput) return jsonWithKeepalive(responsePromise, JSON_KEEPALIVE_AFTER_MS);
   return responsePromise;
 }
 
-const JSON_KEEPALIVE_AFTER_MS = 90000;
-const JSON_KEEPALIVE_EVERY_MS = 15000;
+const JSON_KEEPALIVE_AFTER_MS = 20000;
+const JSON_KEEPALIVE_EVERY_MS = 10000;
 
 const NO_BUFFER_HEADERS = {
   "Cache-Control": "no-cache, no-transform",
@@ -288,7 +296,7 @@ function buildEditBody(body, provider, model) {
   return { body: images.length === 1 ? { ...rest, image: images[0] } : { ...rest, images } };
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit, signal, queueTimeoutMs, jobTimeoutMs } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, edit, signal, queueTimeoutMs, jobTimeoutMs, startedAt } = {}) {
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
@@ -389,6 +397,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           apiKey,
           endpoint,
           usage,
+          startedAt,
         });
       },
       onRequestSuccess: async () => {
@@ -408,6 +417,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     }
 
     if (result.success) {
+      if (startedAt) log.info("IMAGE", `[${provider}/${model}] done ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
       if (result.response?.headers?.get("content-type")?.includes("text/event-stream")) {
         return releaseAfterEventStream(result.response, credentials.releaseImageSlot, signal);
       }
