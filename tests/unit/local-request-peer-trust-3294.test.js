@@ -31,6 +31,7 @@ vi.mock("@/shared/utils/machineId", () => ({
 
 vi.mock("@/lib/auth/dashboardSession", () => ({
   verifyDashboardAuthToken: mocks.verifyDashboardAuthToken,
+  renewDashboardSession: async (_request, response) => response,
 }));
 
 const { proxy } = await import("../../src/dashboardGuard.js");

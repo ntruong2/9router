@@ -10,7 +10,7 @@ vi.mock("@/lib/localDb", () => ({
   validateApiKey: async (key) => key === "valid-router-key",
 }));
 vi.mock("@/shared/utils/machineId", () => ({ getConsistentMachineId: async () => "internal-cli-key" }));
-vi.mock("@/lib/auth/dashboardSession", () => ({ verifyDashboardAuthToken: async () => false }));
+vi.mock("@/lib/auth/dashboardSession", () => ({ verifyDashboardAuthToken: async () => false, renewDashboardSession: async (_request, response) => response }));
 
 import { proxy } from "@/dashboardGuard.js";
 import { GET as publicVoices } from "@/app/api/v1/audio/voices/route.js";
