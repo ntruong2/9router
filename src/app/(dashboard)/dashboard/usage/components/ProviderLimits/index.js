@@ -237,6 +237,9 @@ export default function ProviderLimits() {
   const intervalRef = useRef(null);
   const countdownRef = useRef(null);
   const tickCountRef = useRef(0);
+  // Only the newest connections request may update state: the list is refetched whenever a
+  // filter changes, and a slower stale response must not overwrite the current view.
+  const connectionsRequestRef = useRef(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -244,7 +247,8 @@ export default function ProviderLimits() {
       const saved = JSON.parse(window.localStorage.getItem("quotaTrackerViewState") || "{}");
       if (!searchParams?.get("provider") && typeof saved.providerFilter === "string") _setProviderFilter(saved.providerFilter);
       if (["all", "active", "inactive", "quota-available", "quota-exhausted"].includes(saved.accountFilter)) setAccountFilter(saved.accountFilter);
-      if (["default", "remaining-asc", "remaining-desc"].includes(saved.quotaSortMode)) setQuotaSortMode(saved.quotaSortMode);
+      const savedSortMode = saved.quotaSortMode ?? window.localStorage.getItem("quotaTrackerSortMode");
+      if (["default", "remaining-asc", "remaining-desc"].includes(savedSortMode)) setQuotaSortMode(savedSortMode);
       if (typeof saved.expiringFirst === "boolean") setExpiringFirst(saved.expiringFirst);
       if (Number.isInteger(saved.pageSize) && saved.pageSize >= 1 && saved.pageSize <= ACCOUNT_PAGE_SIZE_MAX) {
         setPageSize(saved.pageSize);
@@ -252,7 +256,10 @@ export default function ProviderLimits() {
       }
     } catch { /* ignore malformed browser preferences */ }
     setHasHydratedViewState(true);
-  }, [searchParams]);
+    // Restore saved preferences once on mount. Re-running on every URL change (the provider
+    // filter rewrites ?provider=) would reapply stale values over the user's current choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || !hasHydratedViewState) return;
@@ -271,18 +278,14 @@ export default function ProviderLimits() {
   }, [accountFilter, providerFilter, hasHydratedViewState]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const saved = window.localStorage.getItem("quotaTrackerSortMode");
-    if (["default", "remaining-asc", "remaining-desc"].includes(saved)) setQuotaSortMode(saved);
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !hasHydratedViewState) return;
     window.localStorage.setItem("quotaTrackerSortMode", quotaSortMode);
-  }, [quotaSortMode]);
+  }, [hasHydratedViewState, quotaSortMode]);
 
   const fetchConnections = useCallback(
     async (targetPage = page) => {
+      const requestId = ++connectionsRequestRef.current;
+      const isStale = () => requestId !== connectionsRequestRef.current;
       try {
         const params = new URLSearchParams({
           page: String(targetPage),
@@ -302,6 +305,7 @@ export default function ProviderLimits() {
         if (!response.ok) throw new Error("Failed to fetch connections");
 
         const data = await response.json();
+        if (isStale()) return null;
         const connectionList = data.connections || [];
         const nextPagination = getSafePagination(data.pagination, pageSize);
         const nextTotals = getSafeTotals(data.totals, connectionList.length);
@@ -313,6 +317,7 @@ export default function ProviderLimits() {
         setPage(getPaginationPageValue(data.pagination, targetPage));
         return connectionList;
       } catch (error) {
+        if (isStale()) return null;
         console.error("Error fetching connections:", error);
         setConnections([]);
         setProviderOptions([]);
@@ -625,6 +630,7 @@ export default function ProviderLimits() {
 
     try {
       const visibleConnections = await fetchConnections(page);
+      if (!visibleConnections) return; // superseded by a newer request
 
       setLoading(buildLoadingState(visibleConnections.filter(shouldFetch)));
       setErrors((prev) =>
@@ -653,9 +659,12 @@ export default function ProviderLimits() {
   }, [refreshingAll, fetchConnections, fetchQuota, page]);
 
   useEffect(() => {
+    // Wait for the saved filters: fetching with the defaults first can show the wrong list.
+    if (!hasHydratedViewState) return;
     const initializeData = async () => {
       setConnectionsLoading(true);
       const visibleConnections = await fetchConnections(page);
+      if (!visibleConnections) return; // superseded by a newer request
       setConnectionsLoading(false);
 
       // Always fetch fresh quota on mount, no cache display
@@ -680,7 +689,7 @@ export default function ProviderLimits() {
     };
 
     initializeData();
-  }, [fetchConnections, fetchQuota, page]);
+  }, [fetchConnections, fetchQuota, page, hasHydratedViewState]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
