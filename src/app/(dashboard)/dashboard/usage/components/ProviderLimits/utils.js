@@ -22,9 +22,9 @@ export const QUOTA_SORT_OPTIONS = [
   { value: "default", label: "Default quota order" },
   { value: "remaining-asc", label: "Quota: low to high" },
   { value: "remaining-desc", label: "Quota: high to low" },
-  { value: "requests-desc", label: "Requests: most active" },
-  { value: "images-desc", label: "Image jobs: most running" },
-  { value: "load-desc", label: "Requests + image jobs: busiest" },
+  { value: "requests-desc", label: "Load: requests" },
+  { value: "images-desc", label: "Load: image jobs" },
+  { value: "load-desc", label: "Load: total" },
 ];
 export const QUOTA_SORT_MODES = QUOTA_SORT_OPTIONS.map(({ value }) => value);
 const LOAD_SORT_MODES = new Set(["requests-desc", "images-desc", "load-desc"]);
