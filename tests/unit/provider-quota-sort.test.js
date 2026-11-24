@@ -33,4 +33,11 @@ describe("provider load sorting", () => {
     expect(sortVisibleConnections(conns, {}, false, "codex", "images-desc", { sessionLoad, imageLoad }).map(({ id }) => id))
       .toEqual(["a", "b", "c"]);
   });
+
+  it("sorts by requests and image jobs together, image jobs breaking ties", () => {
+    const load = { sessionLoad: { a: { activeRequests: 1 }, b: { activeRequests: 2 }, c: { activeRequests: 1 } }, imageLoad: { a: { running: 1 }, c: { running: 3 } } };
+    // totals: a=2 (1 image), b=2 (0 images), c=4
+    expect(sortVisibleConnections(conns, {}, false, "codex", "load-desc", load).map(({ id }) => id))
+      .toEqual(["c", "a", "b"]);
+  });
 });

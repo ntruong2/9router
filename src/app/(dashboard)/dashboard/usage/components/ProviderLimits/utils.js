@@ -24,9 +24,10 @@ export const QUOTA_SORT_OPTIONS = [
   { value: "remaining-desc", label: "Quota: high to low" },
   { value: "requests-desc", label: "Requests: most active" },
   { value: "images-desc", label: "Image jobs: most running" },
+  { value: "load-desc", label: "Requests + image jobs: busiest" },
 ];
 export const QUOTA_SORT_MODES = QUOTA_SORT_OPTIONS.map(({ value }) => value);
-const LOAD_SORT_MODES = new Set(["requests-desc", "images-desc"]);
+const LOAD_SORT_MODES = new Set(["requests-desc", "images-desc", "load-desc"]);
 export const isRemainingSortMode = (mode) => mode === "remaining-asc" || mode === "remaining-desc";
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
@@ -66,12 +67,15 @@ export function sortVisibleConnections(
 ) {
   if (LOAD_SORT_MODES.has(quotaSortMode)) {
     // Busiest first (in-flight now); idle accounts keep the provider-grouped order.
-    const count = quotaSortMode === "requests-desc"
-      ? (connection) => sessionLoad[connection.id]?.activeRequests || 0
-      : (connection) => imageLoad[connection.id]?.running || 0;
+    const requests = (connection) => sessionLoad[connection.id]?.activeRequests || 0;
+    const images = (connection) => imageLoad[connection.id]?.running || 0;
+    const count = quotaSortMode === "requests-desc" ? requests
+      : quotaSortMode === "images-desc" ? images
+      : (connection) => requests(connection) + images(connection);
     const grouped = groupByProviderStable(connections);
     const position = new Map(grouped.map((connection, index) => [connection.id, index]));
-    return grouped.sort((a, b) => count(b) - count(a) || position.get(a.id) - position.get(b.id));
+    // Combined mode: on equal totals, the account with more image jobs (the heavier work) goes first.
+    return grouped.sort((a, b) => count(b) - count(a) || images(b) - images(a) || position.get(a.id) - position.get(b.id));
   }
 
   if (quotaSortMode !== "default") {
