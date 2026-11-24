@@ -251,6 +251,23 @@ describe("long-running edits (Cloudflare 120s idle cut)", () => {
     expect(text).toContain("bad prompt");
   });
 
+  it("does not lock accounts or fall back when the client disconnects mid-job", async () => {
+    const auth = await import("@/sse/services/auth.js");
+    auth.markAccountUnavailable.mockResolvedValue({ shouldFallback: true });
+    const ac = new AbortController();
+    mocks.core.mockImplementation(async () => {
+      ac.abort();
+      return { success: false, status: 502, error: "Invalid response from codex", response: new Response("{}", { status: 502 }) };
+    });
+    const form = new FormData();
+    for (const [k, v] of [["model", "codex/gpt-image-2.6"], ["prompt", "p"], ["image[]", pngFile()]]) form.append(k, v);
+    const res = await handleImageEdit(new Request("http://localhost/v1/images/edits", { method: "POST", body: form, signal: ac.signal }));
+    expect(res.status).toBe(499);
+    expect(mocks.core).toHaveBeenCalledTimes(1);
+    expect(auth.markAccountUnavailable).not.toHaveBeenCalled();
+    auth.markAccountUnavailable.mockResolvedValue({ shouldFallback: false });
+  });
+
   it("answers a fast non-stream edit normally (real status, no keepalive)", async () => {
     const res = await handleImageEdit(codexForm());
     expect(res.status).toBe(200);

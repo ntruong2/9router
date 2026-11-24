@@ -427,6 +427,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     credentials.releaseImageSlot?.();
 
+    // The client hung up: the failure is ours, not the account's. Do not lock it, and stop —
+    // every further account would fail instantly on the aborted signal and get locked too.
+    if (signal?.aborted) {
+      log.info("IMAGE", `[${provider}/${model}] client disconnected after ${startedAt ? ((Date.now() - startedAt) / 1000).toFixed(1) + "s" : "?"}; account not locked`);
+      return errorResponse(499, "Client closed request");
+    }
+
     const { shouldFallback } = await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, result.resetsAtMs || null);
 
     if (shouldFallback) {
