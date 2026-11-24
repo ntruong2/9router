@@ -1307,7 +1307,7 @@ export default function ProviderLimits() {
           {providerFilter !== "all" && (
             <label className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs dark:border-white/10" title="Maximum concurrent requests per account (empty = unlimited)">
               <span className="material-symbols-outlined text-[14px]">speed</span>
-              <span className="hidden sm:inline">Load</span>
+              <span className="hidden sm:inline">Requests</span>
               <input
                 type="number"
                 min="1"
