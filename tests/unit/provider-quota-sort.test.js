@@ -14,3 +14,23 @@ describe("provider quota sorting", () => {
       .toEqual(["b", "a"]);
   });
 });
+
+describe("provider load sorting", () => {
+  const conns = [
+    { id: "a", provider: "codex", name: "a" },
+    { id: "b", provider: "codex", name: "b" },
+    { id: "c", provider: "codex", name: "c" },
+  ];
+  const sessionLoad = { b: { activeRequests: 1 }, c: { activeRequests: 3 } };
+  const imageLoad = { a: { running: 2 }, b: { running: 0 } };
+
+  it("puts the accounts with the most active requests first", () => {
+    expect(sortVisibleConnections(conns, {}, false, "codex", "requests-desc", { sessionLoad, imageLoad }).map(({ id }) => id))
+      .toEqual(["c", "b", "a"]);
+  });
+
+  it("puts the accounts running the most image jobs first and keeps idle ones in order", () => {
+    expect(sortVisibleConnections(conns, {}, false, "codex", "images-desc", { sessionLoad, imageLoad }).map(({ id }) => id))
+      .toEqual(["a", "b", "c"]);
+  });
+});

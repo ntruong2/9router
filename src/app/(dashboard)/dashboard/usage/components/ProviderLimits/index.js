@@ -38,6 +38,8 @@ import {
   ACCOUNT_PAGE_SIZE_MAX,
   ACCOUNT_FILTER_OPTIONS,
   QUOTA_SORT_OPTIONS,
+  QUOTA_SORT_MODES,
+  isRemainingSortMode,
 } from "./utils";
 import Card from "@/shared/components/Card";
 import { ConfirmModal, EditConnectionModal } from "@/shared/components";
@@ -212,6 +214,8 @@ export default function ProviderLimits() {
   const [smartQuotaBackgroundRefresh, setSmartQuotaBackgroundRefresh] = useState(false);
   const [sessionPin, setSessionPin] = useState({});
   const [sessionMaxConcurrent, setSessionMaxConcurrent] = useState({});
+  const [imageMaxConcurrent, setImageMaxConcurrent] = useState({});
+  const [imageQueueTimeoutMs, setImageQueueTimeoutMs] = useState(30000);
   const [sessionLoadStatus, setSessionLoadStatus] = useState({});
   const [imageLoadStatus, setImageLoadStatus] = useState({});
   const addNotification = useNotificationStore((state) => state.addNotification);
@@ -248,7 +252,7 @@ export default function ProviderLimits() {
       if (!searchParams?.get("provider") && typeof saved.providerFilter === "string") _setProviderFilter(saved.providerFilter);
       if (["all", "active", "inactive", "quota-available", "quota-exhausted"].includes(saved.accountFilter)) setAccountFilter(saved.accountFilter);
       const savedSortMode = saved.quotaSortMode ?? window.localStorage.getItem("quotaTrackerSortMode");
-      if (["default", "remaining-asc", "remaining-desc"].includes(savedSortMode)) setQuotaSortMode(savedSortMode);
+      if (QUOTA_SORT_MODES.includes(savedSortMode)) setQuotaSortMode(savedSortMode);
       if (typeof saved.expiringFirst === "boolean") setExpiringFirst(saved.expiringFirst);
       if (Number.isInteger(saved.pageSize) && saved.pageSize >= 1 && saved.pageSize <= ACCOUNT_PAGE_SIZE_MAX) {
         setPageSize(saved.pageSize);
@@ -720,6 +724,8 @@ export default function ProviderLimits() {
         setSmartQuotaBackgroundRefresh(s?.smartQuotaBackgroundRefresh === true);
         setSessionPin({ ...(s?.sessionPin || {}), ...(s?.sessionPin?.codex === undefined && s?.codexSessionPin === true ? { codex: true } : {}) });
         setSessionMaxConcurrent(s?.sessionMaxConcurrent || {});
+        setImageMaxConcurrent(s?.imageMaxConcurrent || {});
+        if (Number.isInteger(s?.imageQueueTimeoutMs)) setImageQueueTimeoutMs(s.imageQueueTimeoutMs);
       })
       .catch(() => {});
   }, []);
@@ -837,6 +843,45 @@ export default function ProviderLimits() {
       setSessionMaxConcurrent((current) => ({ ...current, [provider]: previous }));
     }
   }, [sessionMaxConcurrent]);
+
+  const updateImageMaxConcurrent = useCallback(async (provider, value) => {
+    // Empty input removes the cap (null = unlimited). Server accepts 1..MAX_IMAGE_CONCURRENT (8).
+    const parsed = Number.parseInt(value, 10);
+    const next = Number.isFinite(parsed) ? Math.max(1, Math.min(8, parsed)) : null;
+    const previous = imageMaxConcurrent[provider] ?? null;
+    setImageMaxConcurrent((current) => ({ ...current, [provider]: next }));
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageMaxConcurrent: { [provider]: next } }),
+      });
+      if (!response.ok) throw new Error("Failed to update image capacity");
+    } catch (error) {
+      console.error("Error updating image capacity:", error);
+      setImageMaxConcurrent((current) => ({ ...current, [provider]: previous }));
+    }
+  }, [imageMaxConcurrent]);
+
+  const updateImageQueueTimeout = useCallback(async (value) => {
+    // Seconds in the UI; the server stores ms (1s..300s).
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) return;
+    const next = Math.max(1, Math.min(300, parsed)) * 1000;
+    const previous = imageQueueTimeoutMs;
+    setImageQueueTimeoutMs(next);
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageQueueTimeoutMs: next }),
+      });
+      if (!response.ok) throw new Error("Failed to update image queue wait");
+    } catch (error) {
+      console.error("Error updating image queue wait:", error);
+      setImageQueueTimeoutMs(previous);
+    }
+  }, [imageQueueTimeoutMs]);
 
   const handleHideQuota = useCallback((provider, quota) => {
     const key = getQuotaVisibilityKey(quota);
@@ -964,8 +1009,9 @@ export default function ProviderLimits() {
         expiringFirst,
         providerFilter,
         quotaSortMode,
+        { sessionLoad: sessionLoadStatus, imageLoad: imageLoadStatus },
       ),
-    [connections, quotaData, expiringFirst, providerFilter, quotaSortMode],
+    [connections, quotaData, expiringFirst, providerFilter, quotaSortMode, sessionLoadStatus, imageLoadStatus],
   );
 
   const quotaHealthByConnection = useMemo(() => {
@@ -1272,6 +1318,40 @@ export default function ProviderLimits() {
                 className="w-10 bg-transparent text-center text-xs outline-none"
                 aria-label={`${providerFilter} maximum concurrent requests per account`}
               />
+            </label>
+          )}
+
+          {providerFilter !== "all" && (
+            <label className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs dark:border-white/10" title="Maximum concurrent image jobs per account (empty = unlimited). Extra jobs wait in a queue, then get 503.">
+              <span className="material-symbols-outlined text-[14px]">image</span>
+              <span className="hidden sm:inline">Images</span>
+              <input
+                type="number"
+                min="1"
+                max="8"
+                value={imageMaxConcurrent[providerFilter] ?? ""}
+                placeholder="∞"
+                onChange={(event) => updateImageMaxConcurrent(providerFilter, event.target.value)}
+                className="w-10 bg-transparent text-center text-xs outline-none"
+                aria-label={`${providerFilter} maximum concurrent image jobs per account`}
+              />
+            </label>
+          )}
+
+          {providerFilter !== "all" && imageMaxConcurrent[providerFilter] != null && (
+            <label className="flex h-8 shrink-0 items-center gap-1 rounded-lg border border-black/10 px-2 text-xs dark:border-white/10" title="How long an image job waits for a free slot before returning 503 (seconds, all providers)">
+              <span className="material-symbols-outlined text-[14px]">hourglass_empty</span>
+              <span className="hidden sm:inline">Wait</span>
+              <input
+                type="number"
+                min="1"
+                max="300"
+                value={Math.round(imageQueueTimeoutMs / 1000)}
+                onChange={(event) => updateImageQueueTimeout(event.target.value)}
+                className="w-12 bg-transparent text-center text-xs outline-none"
+                aria-label="Image queue wait in seconds"
+              />
+              <span className="text-text-muted">s</span>
             </label>
           )}
 
@@ -1754,7 +1834,7 @@ export default function ProviderLimits() {
                     compact
                     sortMode="default"
                     showSortLabel={
-                      conn.provider === "codex" && quotaSortMode !== "default"
+                      conn.provider === "codex" && isRemainingSortMode(quotaSortMode)
                     }
                     onHideQuota={(quotaRow) => handleHideQuota(conn.provider, quotaRow)}
                   />

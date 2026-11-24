@@ -22,7 +22,12 @@ export const QUOTA_SORT_OPTIONS = [
   { value: "default", label: "Default quota order" },
   { value: "remaining-asc", label: "Quota: low to high" },
   { value: "remaining-desc", label: "Quota: high to low" },
+  { value: "requests-desc", label: "Requests: most active" },
+  { value: "images-desc", label: "Image jobs: most running" },
 ];
+export const QUOTA_SORT_MODES = QUOTA_SORT_OPTIONS.map(({ value }) => value);
+const LOAD_SORT_MODES = new Set(["requests-desc", "images-desc"]);
+export const isRemainingSortMode = (mode) => mode === "remaining-asc" || mode === "remaining-desc";
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 export function getConnectionLabel(connection) {
@@ -57,7 +62,18 @@ export function sortVisibleConnections(
   expiringFirst,
   providerFilter,
   quotaSortMode,
+  { sessionLoad = {}, imageLoad = {} } = {},
 ) {
+  if (LOAD_SORT_MODES.has(quotaSortMode)) {
+    // Busiest first (in-flight now); idle accounts keep the provider-grouped order.
+    const count = quotaSortMode === "requests-desc"
+      ? (connection) => sessionLoad[connection.id]?.activeRequests || 0
+      : (connection) => imageLoad[connection.id]?.running || 0;
+    const grouped = groupByProviderStable(connections);
+    const position = new Map(grouped.map((connection, index) => [connection.id, index]));
+    return grouped.sort((a, b) => count(b) - count(a) || position.get(a.id) - position.get(b.id));
+  }
+
   if (quotaSortMode !== "default") {
     return [...connections].sort((a, b) => {
       const remainingA = getConnectionQuotaRemaining(a, quotaData);
